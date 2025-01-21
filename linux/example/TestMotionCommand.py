@@ -22,7 +22,7 @@ desc = [0,0,0,0,0,0]
 def startjog(self):
     """机器人点动测试"""
     print("关节1、负向运动、90°、速度30、加速度100")
-    error = robot.StartJOG(ref=0,nb=1,dir=0,max_dis=90,vel=30)
+    error = robot.StartJOG(ref=0,nb=1,dir=0,max_dis=10,vel=30)
     print("StartJOG return ",error)
 
 def stopjog(self):
@@ -43,7 +43,8 @@ def immstopjog(self):
 
 def movej(self):
     """机器人MoveJ测试"""
-    error = robot.MoveJ(JP2,tool=0,user=0, vel=30)
+    JP = [28.166,-108.269,-59.859,-87,94.532,-0.7]
+    error = robot.MoveJ(JP,tool=0,user=0, vel=30)
     print("MoveJ return ",error)
 
 def movel(self):
@@ -132,13 +133,24 @@ def jointoverspeedprotect(self):
     error = robot.MoveL(DP1, tool=0,vel=100, user=0,overSpeedStrategy=3,speedPercent=100)
     print("超速保护 return ", error)
 
+def movej_test(self):
+    """机器人MoveJ测试"""
+    JP = [28.166,-108.269,-59.859,-87,94.532,-0.7]
+    DP = [612.425,221.199,567.61,-165.032,4.199,-59.99]
+
+    JP1 = [130.124,-99.15,-110.123,-62.577,90.997,-81.748]
+    DP1 = [612.425, 221.199, 567.61, -165.032, 4.199, -59.99]
+    error = robot.MoveJ(joint_pos=JP1,tool=0,user=0, vel=30)
+    print("MoveJ return ",error)
+
+movej_test(robot)
 
 
 # startjog(robot)
 # stopjog(robot)
 # immstopjog(robot)
 # movej(robot)
-movel(robot)
+# movel(robot)
 # movecart(robot)
 # movec(robot)
 # circle(robot)
