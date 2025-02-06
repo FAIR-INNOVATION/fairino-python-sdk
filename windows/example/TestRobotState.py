@@ -39,6 +39,11 @@ def robotstate(self):
     print("tl_cur_pos5:", robot.robot_state_pkg.tl_cur_pos[5])
     print("tool:", robot.robot_state_pkg.tool)
     print("user:", robot.robot_state_pkg.user)
-
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[0])
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[1])
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[2])
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[3])
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[4])
+    print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[5])
 
 robotstate(robot)

@@ -43,7 +43,8 @@ def actgripper(self):
     print("ActGripper return ", error)
     time.sleep(2)
 
-    error = robot.MoveGripper(index=1,pos=20,speed=50,force=50,maxtime=30000,block=0)
+    error = robot.MoveGripper(index=1,pos=20,vel=50,force=50,maxtime=30000,
+                              block=0,type=0,rotNum=0,rotVel=0,rotTorque=0)
     print("MoveGripper return ", error)
     time.sleep(3)
 
