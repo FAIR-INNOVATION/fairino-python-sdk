@@ -194,6 +194,7 @@ class RobotError:
     ERR_RPC_ERROR = -4
     ERR_SOCKET_COM_FAILED = -2
     ERR_OTHER = -1
+    ERROR_RECONN = -8
 
 
 class RPC():
@@ -212,9 +213,13 @@ class RPC():
 
     sock_cli_state_state = False
     closeRPC_state = False
+    reconnect_lock = False
+    reconnect_flag = False
+    g_sock_com_err = RobotError.ERROR_RECONN
 
 
     def __init__(self, ip="192.168.58.2"):
+        self.lock = threading.Lock()  # 增加锁
         self.ip_address = ip
         link = 'http://' + self.ip_address + ":20003"
         self.robot = xmlrpc.client.ServerProxy(link)#xmlrpc连接机器人20003端口，用于发送机器人指令数据帧
@@ -251,13 +256,19 @@ class RPC():
             self.robot = None
             socket.setdefaulttimeout(None)
             self.robot = xmlrpc.client.ServerProxy(link)
+
     def connect_to_robot(self):
         """连接到机器人的实时端口"""
-        print("SDK连接机器人")
+        # print("SDK连接机器人")
         self.sock_cli_state = socket.socket(socket.AF_INET, socket.SOCK_STREAM)#套接字连接机器人20004端口，用于实时更新机器人状态数据
+        self.sock_cli_state.settimeout(0.03)  # 设置超时时间为 0.05 秒
         try:
             self.sock_cli_state.connect((self.ip_address, self.ROBOT_REALTIME_PORT))
             self.sock_cli_state_state = True
+        except socket.timeout:
+            print("连接超时，请检查网络连接。")
+            self.sock_cli_state_state = False
+            return False
         except Exception as ex:
             self.sock_cli_state_state = False
             print("SDK连接机器人实时端口失败", ex)
@@ -266,12 +277,71 @@ class RPC():
 
     def reconnect(self):
         """自动重连"""
-        print("自动重连机制")
-        for i in range(1,6):
-            time.sleep(2)
-            if(self.connect_to_robot()):
-                self.sock_cli_state_state = True
-                return
+        max_retries = 20
+        retry_interval = 2  # 2秒
+        # with self.lock:  # 加锁
+        # RPC.is_conect = False
+        print("断联")
+        self.reconnect_flag = True
+        for attempt in range(max_retries):
+            print(f"尝试重新连接，第 {attempt + 1} 次")
+            # 确保 self.sock_cli_state 是新的 socket 对象
+            if self.sock_cli_state:
+                self.sock_cli_state.close()  # 关闭旧的 socket
+                self.sock_cli_state = None  # 重置为 None
+            # 重新初始化 XML-RPC 连接
+            # self.robot = None
+            # link = 'http://' + self.ip_address + ":20003"
+            # self.robot = xmlrpc.client.ServerProxy(link)
+            # 尝试连接
+
+            if self.connect_to_robot():
+                print("重新连接成功")
+                self.SDK_state = True
+                self.reconnect_flag = False
+                return True
+                # 验证 XML-RPC 连接
+                # try:
+                #     time.sleep(1)
+                #     self.Mode(0)  # 调用一个简单的 XML-RPC 方法
+                #     time.sleep(1)
+                #     self.Mode(1)  # 调用一个简单的 XML-RPC 方法
+                #     time.sleep(1)
+                #     # self.robot.Mode(0)  # 调用一个简单的 XML-RPC 方法
+                #     # time.sleep(1)
+                #     # self.robot.Mode(1)  # 调用一个简单的 XML-RPC 方法
+                #     # time.sleep(1)
+                #     # self.Mode(0)  # 调用一个简单的 XML-RPC 方法
+                #     print("XML-RPC 连接验证成功")
+                #     self.reconnect_flag = False
+                #     # RPC.is_conect = True
+                #     return True
+                # except Exception as ex:
+                #     print("XML-RPC 连接验证失败:", ex)
+                #     self.SDK_state = False
+            else:
+                print(f"重新连接失败，等待 {retry_interval} 秒后重试...")
+                time.sleep(retry_interval)
+
+        print("已达到最大重连次数，连接失败")
+        self.SDK_state = False
+        return False
+        #
+        # print("自动重连机制")
+        # for i in range(1,6):
+        #     print("---")
+        #     time.sleep(2)
+        #     try:
+        #         self.sock_cli_state = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        #         self.sock_cli_state.connect((self.ip_address, self.ROBOT_REALTIME_PORT))
+        #         self.sock_cli_state_state = True
+        #     except Exception as ex:
+        #         self.sock_cli_state_state = False
+        #         print("SDK连接机器人实时端口失败", ex)
+        #     if self.sock_cli_state_state:
+        #         # self.sock_cli_state_state = True
+        #         return
+
 
     def robot_state_routine_thread(self):
         """处理机器人状态数据包的线程例程"""
@@ -288,6 +358,7 @@ class RPC():
             #     if not self.connect_to_robot():
             #         return
 
+
             try:
                 # while not self.robot_realstate_exit:
                 while not self.robot_realstate_exit and not self.stop_event.is_set():
@@ -297,6 +368,7 @@ class RPC():
                     if recvbyte <= 0:
                         self.sock_cli_state.close()
                         print("接收机器人状态字节 -1")
+                        # self.reconnect()
                         return
                     else:
                         if tmp_len > 0:
@@ -363,6 +435,8 @@ class RPC():
                     self.SDK_state=False
                     # self.reconnect()
                     print("SDK读取机器人实时数据失败", ex)
+                    self.reconnect()
+
 
     def setup_logging(self, output_model=1, file_path="", file_num=5):
         """用于处理日志"""
@@ -558,8 +632,32 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def Mode(self, state):
+        # with self.lock:  # 加锁
+        # flag = True
+        # while flag == True:
+        flag = True
+        while self.reconnect_flag:
+            time.sleep(0.1)
+            # try:
+            #     # 尝试发送空数据包
+            #     self.sock_cli_state.recv_into(bytearray(1024 * 1024))
+            #     flag = False
+            # except socket.error as e:
+            #     flag = True
+            #     # self.reconnect()
+
+        # while self.reconnect_flag:
+        #     time.sleep(0.1)
+
         state = int(state)
-        error = self.robot.Mode(state)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.Mode(state)
+                flag = False
+            except socket.error as e:
+                flag = True
+
         return error
 
     """   
@@ -679,6 +777,8 @@ class RPC():
     @xmlrpc_timeout
     def MoveJ(self, joint_pos, tool, user, desc_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
               exaxis_pos=[0.0, 0.0, 0.0, 0.0], blendT=-1.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+        while self.reconnect_flag:
+            time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         joint_pos = list(map(float, joint_pos))
@@ -700,8 +800,14 @@ class RPC():
             else:
                 error = ret[0]
                 return error
-        error = self.robot.MoveJ(joint_pos, desc_pos, tool, user, vel, acc, ovl, exaxis_pos, blendT, offset_flag,
+        flag = True
+        while flag:
+            try:
+                error = self.robot.MoveJ(joint_pos, desc_pos, tool, user, vel, acc, ovl, exaxis_pos, blendT, offset_flag,
                                  offset_pos)
+                flag = False
+            except socket.error as e:
+                flag = True
         return error
 
     """   
@@ -728,6 +834,8 @@ class RPC():
     def MoveL(self, desc_pos, tool, user, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
               blendR=-1.0,exaxis_pos=[0.0, 0.0, 0.0, 0.0], search=0, offset_flag=0,
               offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],overSpeedStrategy=0,speedPercent=10):
+        while self.reconnect_flag:
+            time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         desc_pos = list(map(float, desc_pos))
@@ -756,8 +864,16 @@ class RPC():
             else:
                 error1 = ret[0]
                 return error1
-        error1 = self.robot.MoveL(joint_pos, desc_pos, tool, user, vel, acc, ovl, blendR, exaxis_pos, search,
+
+        flag = True
+        while flag:
+            try:
+                error1 = self.robot.MoveL(joint_pos, desc_pos, tool, user, vel, acc, ovl, blendR, exaxis_pos, search,
                                  offset_flag, offset_pos)
+                flag = False
+            except socket.error as e:
+                flag = True
+
         if (overSpeedStrategy > 0):
             error = self.robot.JointOverSpeedProtectEnd()
             if error!=0:
@@ -6303,12 +6419,14 @@ class RPC():
     @param  [in]必选参数 referSampleStartUd 上下基准电流采样开始计数(反馈)，cyc
     @param  [in]必选参数 referSampleCountUd 上下基准电流采样循环计数(反馈)，cyc
     @param  [in]必选参数 referenceCurrent 上下基准电流mA
+    @param  [in]必选参数 offsetType 偏置跟踪类型，0-不偏置；1-采样；2-百分比
+    @param  [in]必选参数 offsetParameter 偏置参数；采样(偏置采样开始时间，默认采一周期)；百分比(偏置百分比(-100 ~ 100))
     @return 错误码 成功- 0, 失败-错误码
     """
     @log_call
     @xmlrpc_timeout
     def ArcWeldTraceControl(self,flag,delaytime, isLeftRight, klr, tStartLr, stepMaxLr, sumMaxLr, isUpLow, kud, tStartUd, stepMaxUd,
-                            sumMaxUd, axisSelect, referenceType, referSampleStartUd, referSampleCountUd, referenceCurrent):
+                            sumMaxUd, axisSelect, referenceType, referSampleStartUd, referSampleCountUd, referenceCurrent, offsetType, offsetParameter):
         flag = int(flag)
         delaytime = float(delaytime)
         isLeftRight = int(isLeftRight)
@@ -6326,9 +6444,11 @@ class RPC():
         referSampleStartUd = float(referSampleStartUd)
         referSampleCountUd = float(referSampleCountUd)
         referenceCurrent = float(referenceCurrent)
+        offsetType = int(offsetType)
+        offsetParameter = int(offsetParameter)
 
         error = self.robot.ArcWeldTraceControl(flag,delaytime, isLeftRight, [klr, tStartLr, stepMaxLr, sumMaxLr], isUpLow, [kud, tStartUd, stepMaxUd,
-                            sumMaxUd], axisSelect, referenceType, referSampleStartUd, referSampleCountUd, referenceCurrent)
+                            sumMaxUd], axisSelect, referenceType, referSampleStartUd, referSampleCountUd, referenceCurrent, offsetType, offsetParameter)
         return error
 
     """   
@@ -6348,6 +6468,7 @@ class RPC():
     @param  [in]必选参数 status 控制状态，0-关闭；1-开启
     @param  [in]必选参数 asaptiveFlag 自适应开启标志，0-关闭；1-开启
     @param  [in]必选参数 interfereDragFlag 干涉区拖动标志，0-关闭；1-开启
+    @param  [in]必选参数 ingularityConstraintsFlag 奇异点策略，0-规避；1-穿越
     @param  [in]必选参数 M=[m1,m2,m3,m4,m5,m6] 惯性系数 
     @param  [in]必选参数 B=[b1,b2,b3,b4,b5,b6] 阻尼系数
     @param  [in]必选参数 K=[k1,k2,k3,k4,k5,k6] 刚度系数
@@ -6358,17 +6479,18 @@ class RPC():
     """
     @log_call
     @xmlrpc_timeout
-    def EndForceDragControl(self, status, asaptiveFlag, interfereDragFlag, M, B, K, F, Fmax, Vmax):
+    def EndForceDragControl(self, status, asaptiveFlag, interfereDragFlag, ingularityConstraintsFlag, M, B, K, F, Fmax, Vmax):
         status = int(status)
         asaptiveFlag = int(asaptiveFlag)
         interfereDragFlag = int(interfereDragFlag)
+        ingularityConstraintsFlag = int(ingularityConstraintsFlag)
         M = list(map(float,M))
         B = list(map(float,B))
         K = list(map(float,K))
         F = list(map(float,F))
         Fmax = float(Fmax)
         Vmax = float(Vmax)
-        error = self.robot.EndForceDragControl(status, asaptiveFlag, interfereDragFlag, M, B, K, F, Fmax, Vmax)
+        error = self.robot.EndForceDragControl(status, asaptiveFlag, interfereDragFlag, ingularityConstraintsFlag, M, B, K, F, Fmax, Vmax)
         return error
 
     """   
@@ -7713,14 +7835,14 @@ class RPC():
     @return 错误码 成功- 0, 失败-错误码
     """
 
-    @log_call
-    @xmlrpc_timeout
-
-    def SavePoint(self,name,update_allprogramfile=0):
-        name = str(name)
-        update_allprogramfile = int(update_allprogramfile)
-        error = self.robot.save_point(name,update_allprogramfile)
-        return error
+    # @log_call
+    # @xmlrpc_timeout
+    #
+    # def SavePoint(self,name,update_allprogramfile=0):
+    #     name = str(name)
+    #     update_allprogramfile = int(update_allprogramfile)
+    #     error = self.robot.save_point(name,update_allprogramfile)
+    #     return error
 
     """   
     @brief 开始奇异位姿保护
@@ -8173,4 +8295,106 @@ class RPC():
 
     def LaserTrackingSearchStop(self):
         error = self.robot.LaserTrackingSearchStop()
+        return error
+
+    """2025.01.24"""
+    """3.7.9"""
+    """
+       @brief 摆动渐变开始
+       @param  [in] weaveNum 摆动编号
+       @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+
+    def WeaveChangeStart(self, weaveNum):
+        weaveNum = int(weaveNum)
+        error = self.robot.WeaveChangeStart(weaveNum)
+        return error
+
+    """
+       @brief 摆动渐变结束
+       @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+
+    def WeaveChangeEnd(self):
+        error = self.robot.WeaveChangeEnd()
+        return error
+
+    """2025.02.20"""
+    """3.8.0"""
+    """
+       @brief  轨迹预处理(轨迹前瞻)
+       @param  [in] name  轨迹文件名
+       @param  [in] mode 采样模式，0-不进行采样；1-等数据间隔采样；2-等误差限制采样
+       @param  [in] errorLim 误差限制，使用直线拟合生效
+       @param  [in] type 平滑方式，0-贝塞尔平滑
+       @param  [in] precision 平滑精度，使用贝塞尔平滑时生效
+       @param  [in] vamx 设定的最大速度，mm/s
+       @param  [in] amax 设定的最大加速度，mm/s2
+       @param  [in] jmax 设定的最大加加速度，mm/s3
+       @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+
+    def LoadTrajectoryLA(self, name, mode, errorLim, type, precision, vamx, amax, jmax):
+        name =str(name)
+        mode = int(mode)
+        errorLim = float(errorLim)
+        type = int(type)
+        precision = float(precision)
+        vamx = float(vamx)
+        amax = float(amax)
+        jmax = float(jmax)
+        error = self.robot.LoadTrajectoryLA(name, mode, errorLim, type, precision, vamx, amax, jmax)
+        return error
+
+    """
+       @brief 轨迹复现(轨迹前瞻)
+       @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+
+    def MoveTrajectoryLA(self):
+        error = self.robot.MoveTrajectoryLA()
+        return error
+
+    """2025.02.25"""
+    """
+      @brief  自定义碰撞检测阈值功能开始，设置关节端和TCP端的碰撞检测阈值
+      @param  [in] flag 1-仅关节检测开启；2-仅TCP检测开启；3-关节和TCP检测同时开启
+      @param  [in] jointDetectionThreshould 关节碰撞检测阈值 j1-j6
+      @param  [in] tcpDetectionThreshould TCP碰撞检测阈值，xyzabc
+      @param  [in] block 0-非阻塞；1-阻塞
+      @return  错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def CustomCollisionDetectionStart(self, flag, jointDetectionThreshould, tcpDetectionThreshould, block):
+        flag = int(flag)
+        jointDetectionThreshould = list(map(float, jointDetectionThreshould))
+        tcpDetectionThreshould = list(map(float, tcpDetectionThreshould))
+        block = int(block)
+        error = self.robot.CustomCollisionDetectionStart(flag, jointDetectionThreshould, tcpDetectionThreshould, block)
+        return error
+
+    """
+       @brief 自定义碰撞检测阈值功能关闭
+       @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+
+    def CustomCollisionDetectionEnd(self):
+        error = self.robot.CustomCollisionDetectionEnd()
         return error

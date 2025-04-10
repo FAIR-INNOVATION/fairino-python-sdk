@@ -80,7 +80,7 @@ def servoj(self):
     i=0
     while i < 100:
         time.sleep(0.1)
-        pos[0] -= 0.2
+        pos[4] -= 0.2
         error = robot.ServoJ(joint_pos=pos,axisPos=[0,0,0,0,0,0])
         i += 1
     robot.ServoMoveEnd()
@@ -143,7 +143,7 @@ def movej_test(self):
     error = robot.MoveJ(joint_pos=JP1,tool=0,user=0, vel=30)
     print("MoveJ return ",error)
 
-movej_test(robot)
+# movej_test(robot)
 
 
 # startjog(robot)
@@ -155,7 +155,7 @@ movej_test(robot)
 # movec(robot)
 # circle(robot)
 # newspiral(robot)
-# servoj(robot)
+servoj(robot)
 # servocart(robot)
 # splineptp(robot)
 # newsplineptp(robot)
