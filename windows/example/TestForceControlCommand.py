@@ -148,12 +148,12 @@ def ft_drag(self):
     """辅助拖动"""
     error,dragState,sixDimensionalDragState = robot.GetForceAndTorqueDragState()
     print("力传感器辅助拖动控制状态:",dragState,"六维力辅助拖动控制状态:",sixDimensionalDragState)
-    robot.EndForceDragControl(status=1,asaptiveFlag=0,interfereDragFlag=0,M=[15.0, 15.0, 15.0, 0.5, 0.5, 0.1],B=[150.0, 150.0, 150.0, 5.0, 5.0, 1.0],K=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],F=[10.0, 10.0, 10.0, 1.0, 1.0, 1.0],Fmax=50,Vmax=100)
+    robot.EndForceDragControl(status=1,asaptiveFlag=0,interfereDragFlag=0,ingularityConstraintsFlag=0,M=[15.0, 15.0, 15.0, 0.5, 0.5, 0.1],B=[150.0, 150.0, 150.0, 5.0, 5.0, 1.0],K=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],F=[10.0, 10.0, 10.0, 1.0, 1.0, 1.0],Fmax=50,Vmax=100)
     error, dragState, sixDimensionalDragState = robot.GetForceAndTorqueDragState()
     print("力传感器辅助拖动控制状态:", dragState, "六维力辅助拖动控制状态:", sixDimensionalDragState)
 
     time.sleep(10)
-    robot.EndForceDragControl(status=0, asaptiveFlag=0, interfereDragFlag=0, M=[15.0, 15.0, 15.0, 0.5, 0.5, 0.1],
+    robot.EndForceDragControl(status=0, asaptiveFlag=0, interfereDragFlag=0,ingularityConstraintsFlag=0, M=[15.0, 15.0, 15.0, 0.5, 0.5, 0.1],
                               B=[150.0, 150.0, 150.0, 5.0, 5.0, 1.0], K=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                               F=[10.0, 10.0, 10.0, 1.0, 1.0, 1.0], Fmax=50, Vmax=100)
     error, dragState, sixDimensionalDragState = robot.GetForceAndTorqueDragState()

@@ -81,7 +81,7 @@ def servoj(self):
     while i < 100:
         time.sleep(0.1)
         pos[4] -= 0.2
-        error = robot.ServoJ(joint_pos=pos,axisPos=[0,0,0,0,0,0])
+        error = robot.ServoJ(joint_pos=pos,axisPos=[0,0,0,0])
         i += 1
     robot.ServoMoveEnd()
     print("ServoJ return ",error)

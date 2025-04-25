@@ -70,12 +70,12 @@ def programrun(self):
 
 def luaupload(self):
     """上传LUA脚本"""
-    error = robot.LuaUpload(filePath="D://zUP/1010TestLUA.lua")
+    error = robot.LuaUpload(filePath="D://zUP/27.lua")
     print("LuaUpload return ", error)
 
 def luadownload(self):
     """下载LUA脚本"""
-    error = robot.LuaDownLoad(fileName="1010TestLUA.lua",savePath="D://zUP/")
+    error = robot.LuaDownLoad(fileName="zzz.lua",savePath="D://zUP/")
     print("LuaDownLoad return ", error)
 
 def luadelete(self):
@@ -89,6 +89,30 @@ def getlualist(self):
     print("Lua脚本数量：", lua_num)
     print("Lua脚本名称", lua_name)
 
+def test0307(self):
+    """控制机器人程序暂停、恢复、停止"""
+    robot.Mode(state=0)
+    robot.ProgramLoad(program_name="/fruser/test0307.lua")
+    error, loadednamestr = robot.GetLoadedProgram()
+    print("Loaded lua name is : ", loadednamestr[0])
+    robot.ProgramRun()
+    # time.sleep(1)
+    #
+    # for i in range(0,5):
+    #     error = robot.PauseMotion()
+    #     print("PauseMotion return ", error)
+    #     time.sleep(2)
+    #     error = robot.ResumeMotion()
+    #     print("ResumeMotion return ", error)
+    #     time.sleep(2)
+    # error = robot.StopMotion()
+    # print("StopMotion return ", error)
+
+def robot_state_test(self):
+    error,robot_state = robot.GetRobotRealTimeState()
+    print(robot_state.tool)
+
+
 
 
 # loaddefaultprogconfig(robot)
@@ -98,4 +122,6 @@ def getlualist(self):
 # luaupload(robot)
 # luadownload(robot)
 # luadelete(robot)
-getlualist(robot)
+# getlualist(robot)
+# test0307(robot)
+robot_state_test(robot)

@@ -38,14 +38,14 @@ def isindragteach(self):
 
 def robotenable(self):
     """机器人上使能或下使能测试"""
-    print("机器人下使能")
-    robot.RobotEnable(state=0)
-    time.sleep(3)
+    # print("机器人下使能")
+    # robot.RobotEnable(state=0)
+    # time.sleep(3)
     print("机器人上使能")
     robot.RobotEnable(state=1)
-    time.sleep(3)
-    print("机器人下使能")
-    robot.RobotEnable(state=0)
+    # time.sleep(3)
+    # print("机器人下使能")
+    # robot.RobotEnable(state=0)
 
 
 def mode(self):
@@ -62,7 +62,7 @@ def mode(self):
 
 
 
-getcontrollerip(robot)
+# getcontrollerip(robot)
 
 
 
@@ -70,3 +70,4 @@ getcontrollerip(robot)
 # isindragteach(robot)
 # robotenable(robot)
 # mode(robot)
+

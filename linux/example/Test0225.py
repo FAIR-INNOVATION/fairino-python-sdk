@@ -11,17 +11,18 @@ def CustomCollisionTest(self):
     tcpDetectionThreshould = [80, 80, 80, 80, 80, 80]
     rtn = robot.CustomCollisionDetectionStart(3, jAointDetectionThreshould, tcpDetectionThreshould, 0)
     print("CustomCollisionDetectionStart rtn is ", rtn)
-    p1Desc = [228.879, -503.594, 453.984, -175.580, 8.293, 171.267]
-    p1Joint = [102.700, -85.333, 90.518, -102.365, -83.932, 22.134]
 
-    p2Desc = [-333.302, -435.580, 449.866, -174.997, 2.017, 109.815]
-    p2Joint = [41.862, -85.333, 90.526, -100.587, -90.014, 22.135]
+    p1Joint = [93.189,-73.209,104.049,-121.335,-90.439,-13.429]
+    p1Desc = [132.497,-558.258,257.293,-179.619,-0.544,-163.382]
+
+    p2Joint = [56.658,-74.379,112.264,-126.895,-90.38,-13.525]
+    p2Desc = [-204.705,-495.507,217.007,178.949,-0.139,160.188]
 
     exaxisPos = [0.0, 0.0, 0.0, 0.0]
     offdese = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    while True:
-        robot.MoveL(desc_pos=p1Desc, tool=0, user=0, vel=100, acc=100, ovl=100)
-        robot.MoveL(desc_pos=p2Desc, tool=0, user=0, vel=100, acc=100, ovl=100)
+    # while True:
+    robot.MoveL(desc_pos=p1Desc, tool=0, user=0, vel=100, acc=100, ovl=100)
+    robot.MoveL(desc_pos=p2Desc, tool=0, user=0, vel=100, acc=100, ovl=100)
     rtn = robot.CustomCollisionDetectionEnd()
     print("CustomCollisionDetectionEnd rtn is ", rtn)
 
