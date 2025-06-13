@@ -143,5 +143,5 @@ def closeRPC(self, robot):
 
 
 # drivingreferencepoint(robot)
-# drivingbelt(robot)
-closeRPC(robot,robot=robot)
+drivingbelt(robot)
+# closeRPC(robot,robot=robot)

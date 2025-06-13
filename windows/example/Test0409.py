@@ -24,9 +24,9 @@ def test(self):
         print(f"RbLogDownload rtn is {rtn}  times {i}")
 
 def testdown(self):
-    # print("RbLogDownload start")
-    # rtn = robot.RbLogDownload("D://zDOWN12/")
-    # print(f"RbLogDownload rtn is {rtn}")
+    print("RbLogDownload start")
+    rtn = robot.RbLogDownload("D://zDOWN/")
+    print(f"RbLogDownload rtn is {rtn}")
 
     # print("AllDataSourceDownload start")
     # rtn = robot.AllDataSourceDownload("D://zDOWN/")
@@ -38,11 +38,11 @@ def testdown(self):
 
 
 
-    rtn = robot.ShutDownRobotOS()
-    print(f"ShutDownRobotOS rtn is {rtn}")
+    # rtn = robot.ShutDownRobotOS()
+    # print(f"ShutDownRobotOS rtn is {rtn}")
 
     # error,SN = robot.GetRobotSN()
     # print(f"robot SN is {SN}")
 
-test(robot)
-# testdown(robot)
+# test(robot)
+testdown(robot)

@@ -11,24 +11,15 @@ import threading
 
 def Trigger(robot):
     i = int(input("请输入一个数字以触发 (please input a number to trigger): "))
-
     rtn = robot.ConveyorComDetectTrigger()
     print(f"ConveyorComDetectTrigger retval is: {rtn}")
 
 def ConveyorTest(robot):
     retval = 0
-
-    # Uncomment if needed
-    # param = [1, 10000, 200, 0, 0, 20]
-    # retval = robot.ConveyorSetParam(param, 0, 0, 0)
-    # print(f"ConveyorSetParam retval is: {retval}")
-
     index = 1
     max_time = 30000
     block = 0
     retval = 0
-
-    # Define poses and joint positions
     startdescPose = [139.176, 4.717, 9.088, -179.999, -0.004, -179.990]
     startjointPos = [-34.129, -88.062, 97.839, -99.780, -90.003, -34.140]
 
@@ -67,13 +58,5 @@ def ConveyorTest(robot):
 
     # Return to home position
     robot.MoveL(desc_pos=homePose, tool=1, user=1)
-
-def ServoJ(joint_pos,axisPos, gain, acc=0.0, vel=0.0, cmdT=0.008, filterT=0.0):
-    if gain == None:
-        print("1")
-    else:
-        print("0")
-
-
 
 ConveyorTest(robot)

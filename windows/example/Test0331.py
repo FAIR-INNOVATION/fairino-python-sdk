@@ -30,18 +30,12 @@ def AccSmooth_MoveL(self):
 
     JP2 = [27.036,-83.909,80.284,-85.579,-90.027,108.604]
     DP2 = [-433.125,-334.428,497.139,-179.723,-0.745,8.437]
-
-    p1Joint = [93.189,-73.209,104.049,-121.335,-90.439,-13.429]
-    p1Desc = [132.497,-558.258,257.293,-179.619,-0.544,-163.382]
-
-    p2Joint = [56.658,-74.379,112.264,-126.895,-90.38,-13.525]
-    p2Desc = [-204.705,-495.507,217.007,178.949,-0.139,160.188]
     error = robot.AccSmoothStart(saveFlag=0)
     print("AccSmoothStart return:",error)
-    error = robot.MoveL(p1Desc, tool=0, user=0, vel=100)
-    error = robot.MoveL(p2Desc, tool=0, user=0, vel=100)
-    error = robot.MoveL(p1Desc, tool=0, user=0, vel=100)
-    error = robot.MoveL(p2Desc, tool=0, user=0, vel=100)
+    error = robot.MoveL(DP1, tool=0, user=0, vel=100)
+    error = robot.MoveL(DP2, tool=0, user=0, vel=100)
+    error = robot.MoveL(DP1, tool=0, user=0, vel=100)
+    error = robot.MoveL(DP2, tool=0, user=0, vel=100)
     error = robot.AccSmoothEnd(saveFlag=0)
     print("AccSmoothEnd return:", error)
 
@@ -79,6 +73,6 @@ def AccSmooth_Circle(self):
     print("AccSmoothEnd return:", error)
 
 # AccSmooth_MoveJ(robot)
-AccSmooth_MoveL(robot)
+# AccSmooth_MoveL(robot)
 # AccSmooth_MoveC(robot)
-# AccSmooth_Circle(robot)
+AccSmooth_Circle(robot)

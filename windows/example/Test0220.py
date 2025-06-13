@@ -19,7 +19,7 @@ def TestTrajectoryLA(self):
     # robot.LoadTrajectoryLA(nameA, 1, 2, 0, 2, 100, 200, 1000) #直线拟合
     # error,startPos = robot.GetTrajectoryStartPose(nameA)
     error,startPos = robot.GetTrajectoryStartPose(nameB)
-    robot.MoveCart(startPos, 0, 0, 100, 100, 100, -1, -1)
+    robot.MoveCart(startPos, 1, 0, 100, 100, 100, -1, -1)
     rtn = robot.MoveTrajectoryLA()
     print("MoveTrajectoryLA rtn is ", rtn)
 

@@ -45,5 +45,6 @@ def robotstate(self):
     print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[3])
     print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[4])
     print("jointDriverTemperature:", robot.robot_state_pkg.jointDriverTemperature[5])
-
-robotstate(robot)
+while True:
+    robotstate(robot)
+    time.sleep(1)
