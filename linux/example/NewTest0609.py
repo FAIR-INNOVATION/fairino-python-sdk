@@ -1157,6 +1157,18 @@ def TestTraj(self):
 
     robot.CloseRPC()
 
+def testtpd(self):
+    rtn = robot.TrajectoryJUpLoad("D://zUP/testA.txt")
+    print(f"Upload TrajectoryJ A {rtn}")
+
+    rtn = robot.TrajectoryJUpLoad("D://zUP/testB.txt")
+    print(f"Upload TrajectoryJ B {rtn}")
+
+    rtn = robot.TrajectoryJDelete("testA.txt")
+    print(f"Delete TrajectoryJ A {rtn}")
+
+    rtn = robot.TrajectoryJDelete("testB.txt")
+    print(f"Delete TrajectoryJ B {rtn}")
 
 def TestLuaOp(self):
     program_name = "/fruser/test0610.lua"
@@ -1448,7 +1460,11 @@ def TestAxleLua(self):
 
     robot.CloseRPC()
 
-
+def testsmoot(self):
+    while True:
+        error, state = robot.GetSmarttoolBtnState()
+        print(f"{state:016b}")
+        time.sleep(0.1)
 
 
 def TestSetWeldParam(self):
@@ -1613,6 +1629,43 @@ def TestWeave(self):
     robot.ArcWeldTraceControl(0, 0, 1, 0.06, 5, 5, 60, 1, 0.06, 5, 5, 80, 0, 0, 4, 1, 10, 0, 0)
     robot.ARCEnd(1, 0, 10000)
 
+    robot.CloseRPC()
+
+
+import time
+
+
+def TestWelding(self):
+    # Wire feed tests
+    robot.SetForwardWireFeed(0, 1)
+    time.sleep(1)
+    robot.SetForwardWireFeed(0, 0)
+    robot.SetReverseWireFeed(0, 1)
+    time.sleep(1)
+    robot.SetReverseWireFeed(0, 0)
+    robot.SetAspirated(0, 1)
+    time.sleep(1)
+    robot.SetAspirated(0, 0)
+    # Welding parameters setup
+    robot.WeldingSetCurrent(1, 230, 0, 0)
+    robot.WeldingSetVoltage(1, 24, 0, 1)
+    # Position definitions
+    p1Desc = [228.879, -503.594, 453.984, -175.580, 8.293, 171.267]
+    p1Joint = [102.700, -85.333, 90.518, -102.365, -83.932, 22.134]
+    p2Desc = [-333.302, -435.580, 449.866, -174.997, 2.017, 109.815]
+    p2Joint = [41.862, -85.333, 90.526, -100.587, -90.014, 22.135]
+    exaxisPos = [0, 0, 0, 0]
+    offdese = [0, 0, 0, 0, 0, 0]
+    # Movement and welding sequence
+    robot.MoveJ(joint_pos=p1Joint, tool=13, user=0)
+    robot.ARCStart(1, 0, 10000)
+    robot.WeaveStart(0)
+    robot.MoveL(desc_pos=p2Desc, tool=13, user=0)
+    robot.ARCEnd(1, 0, 10000)
+    robot.WeaveEnd(0)
+    # Welding control functions
+    robot.WeldingStartReWeldAfterBreakOff()
+    robot.WeldingAbortWeldAfterBreakOff()
     robot.CloseRPC()
 
 def TestSSHMd5(self):
@@ -1905,6 +1958,11 @@ def TestWireSearch(self):
     wobjCoord = [0, 0, 0, 0, 0, 0]
     robot.SetWObjCoord(1, wobjCoord, 0)
 
+    # robot.ExtDevSetUDPComParam("192.168.58.88", 2021, 2, 50, 5, 50, 1, 50, 10)
+    # robot.ExtDevLoadUDPDriver()
+    #
+    # robot.SetWireSearchExtDIONum(0, 0)
+
     exaxisPos = [0, 0, 0, 0]
     offdese = [0, 0, 0, 0, 0, 0]
 
@@ -2035,6 +2093,74 @@ def TestFTInit(self):
     # print(f"ForceSensorAutoComputeLoad return {error}")
     print(f"the result is weight {computeWeight} pos is {tran[0]} {tran[1]} {tran[2]}")
 
+    robot.CloseRPC()
+
+
+import time
+
+
+import time
+
+
+def TestUDPAxis(self):
+    # 设置UDP通信参数
+    rtn = robot.ExtDevSetUDPComParam("192.168.58.88", 2021, 2, 100, 3, 200, 1, 100, 5, 1)
+    print(f"ExtDevSetUDPComParam rtn is {rtn}")
+    # 获取UDP通信参数
+    ip = ""
+    port = 0
+    period = 0
+    lossPkgTime = 0
+    lossPkgNum = 0
+    disconnectTime = 0
+    reconnectEnable = 0
+    reconnectPeriod = 0
+    reconnectNum = 0
+    rtn,[ip, port, period, lossPkgTime, lossPkgNum,disconnectTime, reconnectEnable, reconnectPeriod, reconnectNum] = robot.ExtDevGetUDPComParam()
+    param_str = (f"\nip {ip}\nport {port}\nperiod {period}\nlossPkgTime {lossPkgTime}"
+                 f"\nlossPkgNum {lossPkgNum}\ndisConntime {disconnectTime}"
+                 f"\nreconnecable {reconnectEnable}\nreconnperiod {reconnectPeriod}"
+                 f"\nreconnnun {reconnectNum}")
+    print(f"ExtDevGetUDPComParam rtn is {rtn}{param_str}")
+    # 加载UDP驱动
+    robot.ExtDevLoadUDPDriver()
+    # 伺服使能
+    rtn = robot.ExtAxisServoOn(1, 1)
+    print(f"ExtAxisServoOn axis id 1 rtn is {rtn}")
+    rtn = robot.ExtAxisServoOn(2, 1)
+    print(f"ExtAxisServoOn axis id 2 rtn is {rtn}")
+    time.sleep(2)
+    # 设置回零参数
+    robot.ExtAxisSetHoming(1, 0, 10, 2)
+    time.sleep(2)
+    rtn = robot.ExtAxisSetHoming(2, 0, 10, 2)
+    print(f"ExtAxisSetHoming rtn is {rtn}")
+    time.sleep(4)
+    # 设置轴参数
+    rtn = robot.SetRobotPosToAxis(1)
+    print(f"SetRobotPosToAxis rtn is {rtn}")
+    rtn = robot.SetAxisDHParaConfig(10, 20, 0, 0, 0, 0, 0, 0, 0)
+    print(f"SetAxisDHParaConfig rtn is {rtn}")
+    rtn = robot.ExtAxisParamConfig(1, 1, 1, 1000, -1000, 1000, 1000, 1.905, 262144, 200, 1, 0, 0)
+    print(f"ExtAxisParamConfig axis 1 rtn is {rtn}")
+    rtn = robot.ExtAxisParamConfig(2, 1, 1, 1000, -1000, 1000, 1000, 4.444, 262144, 200, 1, 0, 0)
+    print(f"ExtAxisParamConfig axis 2 rtn is {rtn}")
+    time.sleep(3)
+    # 轴1点动测试
+    robot.ExtAxisStartJog(1, 0, 10, 10, 30)
+    time.sleep(1)
+    robot.ExtAxisStopJog(1)
+    time.sleep(3)
+    robot.ExtAxisServoOn(1, 0)
+    # 轴2点动测试
+    time.sleep(3)
+    robot.ExtAxisStartJog(2, 0, 10, 10, 30)
+    time.sleep(1)
+    robot.ExtAxisStopJog(2)
+    time.sleep(3)
+    robot.ExtAxisServoOn(2, 0)
+    # 卸载驱动并关闭连接
+    robot.ExtDevUnloadUDPDriver()
     robot.CloseRPC()
 
 def TestFTLoadCompute(self):

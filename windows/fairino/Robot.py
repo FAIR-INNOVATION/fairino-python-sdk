@@ -725,7 +725,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.1.3", "Robot:V3.8.3"]
+        sdk = ["SDK:V2.1.4", "Robot:V3.8.4"]
         return error, sdk
 
     """   
@@ -8332,22 +8332,24 @@ class RPC():
     @brief  UDP扩展轴运动
     @param [in]必选参数 pos 目标位置 轴 1 位置 ~ 轴 4 位置[exaxis[0],exaxis[1],exaxis[2],exaxis[3]]
     @param [in]必选参数 ovl 速度百分比
+    @param [in]必选参数 blend 平滑参数(mm或ms)
     @return 错误码 成功- 0, 失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ExtAxisMove(self, pos, ovl):
+    def ExtAxisMove(self, pos, ovl, blend):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         pos = list(map(float, pos))
         ovl = float(ovl)
+        blend = float(blend)
         flag = True
         while flag:
             try:
-                error = self.robot.ExtAxisMoveJ(0, pos[0], pos[1], pos[2], pos[3], ovl)
+                error = self.robot.ExtAxisMoveJ(0, pos[0], pos[1], pos[2], pos[3], ovl, blend)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -8397,7 +8399,7 @@ class RPC():
             else:
                 error = ret[0]
                 return error
-        error = self.robot.ExtAxisMoveJ(1, exaxis_pos[0], exaxis_pos[1], exaxis_pos[2], exaxis_pos[3], ovl)
+        error = self.robot.ExtAxisMoveJ(1, exaxis_pos[0], exaxis_pos[1], exaxis_pos[2], exaxis_pos[3], ovl, blendT)
         if error != 0:
             return error
         flag = True
@@ -8456,13 +8458,13 @@ class RPC():
             else:
                 error = ret[0]
                 return error
-        error = self.robot.ExtAxisMoveJ(1, exaxis_pos[0], exaxis_pos[1], exaxis_pos[2], exaxis_pos[3], ovl)
+        error = self.robot.ExtAxisMoveJ(1, exaxis_pos[0], exaxis_pos[1], exaxis_pos[2], exaxis_pos[3], ovl, blendR)
         if error != 0:
             return error
         flag = True
         while flag:
             try:
-                error = self.robot.MoveL(joint_pos, desc_pos, tool, user, vel, acc, ovl, blendR, exaxis_pos, search,
+                error = self.robot.MoveL(joint_pos, desc_pos, tool, user, vel, acc, ovl, blendR,0, exaxis_pos, search,
                                          offset_flag, offset_pos)
                 flag = False
             except socket.error as e:
@@ -8548,7 +8550,7 @@ class RPC():
             else:
                 error = rett[0]
                 return error
-        error = self.robot.ExtAxisMoveJ(1, exaxis_pos_t[0], exaxis_pos_t[1], exaxis_pos_t[2], exaxis_pos_t[3], ovl)
+        error = self.robot.ExtAxisMoveJ(1, exaxis_pos_t[0], exaxis_pos_t[1], exaxis_pos_t[2], exaxis_pos_t[3], ovl, blendR)
         if error != 0:
             return error
         flag = True
@@ -11718,7 +11720,8 @@ class RPC():
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         saveFlag = bool(saveFlag)
-        saveFlag_flag = 0 if saveFlag else 1
+        saveFlag_flag = 1 if saveFlag else 0
+        saveFlag_flag = int(saveFlag_flag)
         flag = True
         while flag:
             try:
@@ -11743,7 +11746,9 @@ class RPC():
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         saveFlag = bool(saveFlag)
-        saveFlag_flag = 0 if saveFlag else 1
+        saveFlag_flag = 1 if saveFlag else 0
+        saveFlag_flag = int(saveFlag_flag)
+
         flag = True
         while flag:
             try:
@@ -12306,222 +12311,222 @@ class RPC():
         if error == 0:
             return error, _error[1], _error[2]
         return error, None, None
-    #
-    # """2025.07.04"""
-    # """3.8.4"""
-    #
-    # """
-    # @brief 设置焦点标定点
-    # @param  [in] pointNum 焦点标定点编号 1-8
-    # @param  [in] point 标定点坐标
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetFocusCalibPoint(self, pointNum, point):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     pointNum = int(pointNum)
-    #     point = list(map(float, point))
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             error = self.robot.SetFocusCalibPoint(pointNum,point[0],point[1],point[2],point[3],point[4],point[5])
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #     return error
-    #
-    # """
-    # @brief 计算焦点标定结果
-    # @param  [in] pointNum 标定点个数
-    # @return 错误码 成功- 0, 失败-错误码
-    # @return 返回值（调用成功返回） resultPos 标定结果XYZ
-    # @return 返回值（调用成功返回） accuracy 标定精度误差
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def ComputeFocusCalib(self, pointNum):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     pointNum = int(pointNum)
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             _error = self.robot.ComputeFocusCalib(pointNum)
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #
-    #     error = _error[0]
-    #     if error == 0:
-    #         return error, [_error[1], _error[2], _error[3]], _error[4]
-    #     return error, None, None
-    #
-    # """
-    # @brief 开启焦点跟随
-    # @param  [in] kp 比例参数，默认50.0
-    # @param  [in] kpredict 前馈参数，默认19.0
-    # @param  [in] aMax 最大角加速度限制，默认1440°/s^2
-    # @param  [in] vMax 最大角速度限制，默认180°/s
-    # @param  [in] type 锁定X轴指向(0-参考输入矢量；1-水平；2-垂直)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def FocusStart(self, kp=50.0, kpredic=19.0, aMax=1440, vMax=180, type=0):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     kp = float(kp)
-    #     kpredic = float(kpredic)
-    #     aMax = float(aMax)
-    #     vMax = float(vMax)
-    #     type = int(type)
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             error = self.robot.FocusStart(kp, kpredic, aMax, vMax, type)
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #     return error
-    #
-    # """
-    # @brief 停止焦点跟随
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def FocusEnd(self):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             error = self.robot.FocusEnd()
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #     return error
-    #
-    # """
-    # @brief 设置焦点坐标
-    # @param  [in] pos 焦点坐标XYZ
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetFocusPosition(self, pos):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     pos = list(map(float, pos))
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             error = self.robot.SetFocusPosition(pos[0],pos[1],pos[2])
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #     return error
-    #
-    # """2025.07.08"""
-    # """
-    # @brief 设置编码器升级
-    # @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetEncoderUpgrade(self, path):
-    #     while self.reconnect_flag:
-    #         time.sleep(0.1)
-    #     path = str(path)
-    #     flag = True
-    #     while flag:
-    #         try:
-    #             error = self.robot.SetEncoderUpgrade(path)
-    #             flag = False
-    #         except socket.error as e:
-    #             flag = True
-    #     return error
-    #
-    # """
-    # @brief 设置关节固件升级
-    # @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
-    # @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetJointFirmwareUpgrade(self, type, path):
-    #     type = int(type)
-    #     path = str(path)
-    #     errcode = self.__FileUpLoad(2, path)
-    #     if errcode == 0:
-    #         file_name = "/tmp/" + os.path.basename(path)
-    #         for joint_num in range(1, 7):
-    #             errcode = self.SlaveFileWrite(1, joint_num, file_name)
-    #             if errcode != 0:
-    #                 return errcode
-    #     return errcode
-    #
-    # """
-    # @brief 设置控制箱固件升级
-    # @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
-    # @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetCtrlFirmwareUpgrade(self, type, path):
-    #     type = int(type)
-    #     path = str(path)
-    #     errcode = self.__FileUpLoad(2, path)
-    #     if errcode == 0:
-    #         file_name = "/tmp/" + os.path.basename(path)
-    #         errcode = self.SlaveFileWrite(type, 0, file_name)
-    #         return errcode
-    #     return errcode
-    #
-    # """
-    # @brief 设置末端固件升级
-    # @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
-    # @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def SetEndFirmwareUpgrade(self, type, path):
-    #     type = int(type)
-    #     path = str(path)
-    #     errcode = self.__FileUpLoad(2, path)
-    #     if errcode == 0:
-    #         file_name = "/tmp/" + os.path.basename(path)
-    #         errcode = self.SlaveFileWrite(type, 7, file_name)
-    #         return errcode
-    #     return errcode
-    #
-    # """
-    # @brief 关节全参数配置文件升级
-    # @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
-    # @return 错误码 成功- 0, 失败-错误码
-    # """
-    #
-    # @log_call
-    # @xmlrpc_timeout
-    # def JointAllParamUpgrade(self, path):
-    #     path = str(path)
-    #     errcode = self.__FileUpLoad(5, path)
-    #     if errcode == 0:
-    #         error = self.robot.JointAllParamUpgrade()
-    #         return error
-    #     return errcode
+
+    """2025.07.04"""
+    """3.8.4"""
+
+    """
+    @brief 设置焦点标定点
+    @param  [in] pointNum 焦点标定点编号 1-8
+    @param  [in] point 标定点坐标
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetFocusCalibPoint(self, pointNum, point):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        pointNum = int(pointNum)
+        point = list(map(float, point))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetFocusCalibPoint(pointNum,point[0],point[1],point[2],point[3],point[4],point[5])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 计算焦点标定结果
+    @param  [in] pointNum 标定点个数
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） resultPos 标定结果XYZ
+    @return 返回值（调用成功返回） accuracy 标定精度误差
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def ComputeFocusCalib(self, pointNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        pointNum = int(pointNum)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.ComputeFocusCalib(pointNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            return error, [_error[1], _error[2], _error[3]], _error[4]
+        return error, None, None
+
+    """
+    @brief 开启焦点跟随
+    @param  [in] kp 比例参数，默认50.0
+    @param  [in] kpredict 前馈参数，默认19.0
+    @param  [in] aMax 最大角加速度限制，默认1440°/s^2
+    @param  [in] vMax 最大角速度限制，默认180°/s
+    @param  [in] type 锁定X轴指向(0-参考输入矢量；1-水平；2-垂直)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FocusStart(self, kp=50.0, kpredic=19.0, aMax=1440, vMax=180, type=0):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        kp = float(kp)
+        kpredic = float(kpredic)
+        aMax = float(aMax)
+        vMax = float(vMax)
+        type = int(type)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FocusStart(kp, kpredic, aMax, vMax, type)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 停止焦点跟随
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FocusEnd(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FocusEnd()
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置焦点坐标
+    @param  [in] pos 焦点坐标XYZ
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetFocusPosition(self, pos):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        pos = list(map(float, pos))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetFocusPosition(pos[0],pos[1],pos[2])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """2025.07.08"""
+    """
+    @brief 设置编码器升级
+    @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetEncoderUpgrade(self, path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        path = str(path)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetEncoderUpgrade(path)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置关节固件升级
+    @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
+    @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetJointFirmwareUpgrade(self, type, path):
+        type = int(type)
+        path = str(path)
+        errcode = self.__FileUpLoad(2, path)
+        if errcode == 0:
+            file_name = "/tmp/" + os.path.basename(path)
+            for joint_num in range(1, 7):
+                errcode = self.SlaveFileWrite(1, joint_num, file_name)
+                if errcode != 0:
+                    return errcode
+        return errcode
+
+    """
+    @brief 设置控制箱固件升级
+    @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
+    @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetCtrlFirmwareUpgrade(self, type, path):
+        type = int(type)
+        path = str(path)
+        errcode = self.__FileUpLoad(2, path)
+        if errcode == 0:
+            file_name = "/tmp/" + os.path.basename(path)
+            errcode = self.SlaveFileWrite(type, 0, file_name)
+            return errcode
+        return errcode
+
+    """
+    @brief 设置末端固件升级
+    @param  [in] type 升级文件类型；1-升级固件；2-升级从站配置文件
+    @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetEndFirmwareUpgrade(self, type, path):
+        type = int(type)
+        path = str(path)
+        errcode = self.__FileUpLoad(2, path)
+        if errcode == 0:
+            file_name = "/tmp/" + os.path.basename(path)
+            errcode = self.SlaveFileWrite(type, 7, file_name)
+            return errcode
+        return errcode
+
+    """
+    @brief 关节全参数配置文件升级
+    @param  [in] path 本地升级包全路径(D://zUP/XXXXX.bin)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointAllParamUpgrade(self, path):
+        path = str(path)
+        errcode = self.__FileUpLoad(5, path)
+        if errcode == 0:
+            error = self.robot.JointAllParamUpgrade()
+            return error
+        return errcode
