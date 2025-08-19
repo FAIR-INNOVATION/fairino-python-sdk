@@ -725,7 +725,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.1.4", "Robot:V3.8.4"]
+        sdk = ["SDK:V2.1.5", "Robot:V3.8.5"]
         return error, sdk
 
     """   
@@ -923,7 +923,7 @@ class RPC():
         return error
 
     """   
-    @brief  关节空间运动
+    @brief  关节空间运动(自动正/逆运动学计算)
     @param  [in] 必选参数 joint_pos: 目标关节位置，单位 [°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
@@ -976,7 +976,7 @@ class RPC():
         return error
 
     """   
-    @brief  笛卡尔空间直线运动
+    @brief  笛卡尔空间直线运动(自动正/逆运动学计算)
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
@@ -990,6 +990,8 @@ class RPC():
     @param  [in] 默认参数 search:[0]-不焊丝寻位，[1]-焊丝寻位
     @param  [in] 默认参数 offset_flag:[0]-不偏移，[1]-工件/基坐标系下偏移，[2]-工具坐标系下偏移 默认 0
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
+    @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
     @param  [in] 默认参数 overSpeedStrategy  超速处理策略，0-策略关闭；1-标准；2-超速时报错停止；3-自适应降速，默认为0
     @param  [in] 默认参数 speedPercent  允许降速阈值百分比[0-100]，默认10%
     @return 错误码 成功-0  失败-错误码
@@ -999,7 +1001,7 @@ class RPC():
     @xmlrpc_timeout
     def MoveL(self, desc_pos, tool, user, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
               blendR=-1.0, blendMode = 0,exaxis_pos=[0.0, 0.0, 0.0, 0.0], search=0, offset_flag=0,
-              offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],overSpeedStrategy=0,speedPercent=10):
+              offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],config=-1,velAccParamMode=0,overSpeedStrategy=0,speedPercent=10):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -1017,6 +1019,8 @@ class RPC():
         search = int(search)
         offset_flag = int(offset_flag)
         offset_pos = list(map(float, offset_pos))
+        config = int(config)
+        velAccParamMode = int(velAccParamMode)
         overSpeedStrategy = int(overSpeedStrategy)
         speedPercent = int(speedPercent)
         if (overSpeedStrategy > 0):
@@ -1025,7 +1029,7 @@ class RPC():
                 return error
         if ((joint_pos[0] == 0.0) and (joint_pos[1] == 0.0) and (joint_pos[2] == 0.0) and (joint_pos[3] == 0.0)
                 and (joint_pos[4] == 0.0) and (joint_pos[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            ret = self.robot.GetInverseKin(0, desc_pos, -1)  # 逆运动学求解
+            ret = self.robot.GetInverseKin(0, desc_pos, config)  # 逆运动学求解
             if ret[0] == 0:
                 joint_pos = [ret[1], ret[2], ret[3], ret[4], ret[5], ret[6]]
             else:
@@ -1035,7 +1039,7 @@ class RPC():
         flag = True
         while flag:
             try:
-                error1 = self.robot.MoveL(joint_pos, desc_pos, tool, user, vel, acc, ovl, blendR, blendMode, exaxis_pos, search,offset_flag, offset_pos)
+                error1 = self.robot.MoveL([joint_pos[0],joint_pos[1],joint_pos[2],joint_pos[3],joint_pos[4],joint_pos[5], desc_pos[0],desc_pos[1],desc_pos[2],desc_pos[3],desc_pos[4],desc_pos[5], tool, user, vel, acc, ovl, blendR, blendMode, exaxis_pos[0],exaxis_pos[1],exaxis_pos[2],exaxis_pos[3], search,offset_flag, offset_pos[0],offset_pos[1],offset_pos[2],offset_pos[3],offset_pos[4],offset_pos[5],100.0,velAccParamMode])
                 flag = False
             except socket.error as e:
                 flag = True
@@ -1048,7 +1052,7 @@ class RPC():
         return error1
 
     """   
-    @brief  笛卡尔空间圆弧运动
+    @brief  笛卡尔空间圆弧运动(自动正/逆运动学计算)
     @param  [in] 必选参数 desc_pos_p: 路径点笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool_p: 路径点工具号，[0~14]
     @param  [in] 必选参数 user_p: 路径点工件号，[0~14]
@@ -1069,6 +1073,8 @@ class RPC():
     @param  [in] 默认参数 offset_pos_t: 目标点位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认100.0
     @param  [in] 默认参数 blendR:[-1.0]-运动到位 (阻塞)，[0~1000]-平滑半径 (非阻塞)，单位 [mm] 默认-1.0
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
+    @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
     @return 错误码 成功-0  失败-错误码
     """
 
@@ -1080,14 +1086,14 @@ class RPC():
               offset_pos_p=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
               vel_t=20.0, acc_t=100.0, exaxis_pos_t=[0.0, 0.0, 0.0, 0.0], offset_flag_t=0,
               offset_pos_t=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-              ovl=100.0, blendR=-1.0):
+              ovl=100.0, blendR=-1.0,config=-1,velAccParamMode=0):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         desc_pos_p = list(map(float, desc_pos_p))
-        tool_p = float(int(tool_p))
-        user_p = float(int(user_p))
+        tool_p = int(tool_p)
+        user_p = int(user_p)
         joint_pos_p = list(map(float, joint_pos_p))
         vel_p = float(vel_p)
         acc_p = float(acc_p)
@@ -1096,8 +1102,8 @@ class RPC():
         offset_pos_p = list(map(float, offset_pos_p))
 
         desc_pos_t = list(map(float, desc_pos_t))
-        tool_t = float(int(tool_t))
-        user_t = float(int(user_t))
+        tool_t = int(tool_t)
+        user_t = int(user_t)
         joint_pos_t = list(map(float, joint_pos_t))
         vel_t = float(vel_t)
         acc_t = float(acc_t)
@@ -1107,10 +1113,12 @@ class RPC():
 
         ovl = float(ovl)
         blendR = float(blendR)
+        config = int(config)
+        velAccParamMode = int(velAccParamMode)
 
         if ((joint_pos_p[0] == 0.0) and (joint_pos_p[1] == 0.0) and (joint_pos_p[2] == 0.0) and (joint_pos_p[3] == 0.0)
                 and (joint_pos_p[4] == 0.0) and (joint_pos_p[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            retp = self.robot.GetInverseKin(0, desc_pos_p, -1)  # 逆运动学求解
+            retp = self.robot.GetInverseKin(0, desc_pos_p, config)  # 逆运动学求解
             if retp[0] == 0:
                 joint_pos_p = [retp[1], retp[2], retp[3], retp[4], retp[5], retp[6]]
             else:
@@ -1119,7 +1127,7 @@ class RPC():
 
         if ((joint_pos_t[0] == 0.0) and (joint_pos_t[1] == 0.0) and (joint_pos_t[2] == 0.0) and (joint_pos_t[3] == 0.0)
                 and (joint_pos_t[4] == 0.0) and (joint_pos_t[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            rett = self.robot.GetInverseKin(0, desc_pos_t, -1)  # 逆运动学求解
+            rett = self.robot.GetInverseKin(0, desc_pos_t, config)  # 逆运动学求解
             if rett[0] == 0:
                 joint_pos_t = [rett[1], rett[2], rett[3], rett[4], rett[5], rett[6]]
             else:
@@ -1128,16 +1136,16 @@ class RPC():
         flag = True
         while flag:
             try:
-                error = self.robot.MoveC(joint_pos_p, desc_pos_p, [tool_p, user_p, vel_p, acc_p], exaxis_pos_p, offset_flag_p,
-                                         offset_pos_p, joint_pos_t, desc_pos_t, [tool_t, user_t, vel_t, acc_t], exaxis_pos_t,
-                                         offset_flag_t, offset_pos_t, ovl, blendR)
+                error = self.robot.MoveC([joint_pos_p[0],joint_pos_p[1],joint_pos_p[2],joint_pos_p[3],joint_pos_p[4],joint_pos_p[5], desc_pos_p[0],desc_pos_p[1],desc_pos_p[2],desc_pos_p[3],desc_pos_p[4],desc_pos_p[5], tool_p, user_p, vel_p, acc_p, exaxis_pos_p[0],exaxis_pos_p[1],exaxis_pos_p[2],exaxis_pos_p[3], offset_flag_p,
+                                         offset_pos_p[0],offset_pos_p[1],offset_pos_p[2],offset_pos_p[3],offset_pos_p[4],offset_pos_p[5], joint_pos_t[0],joint_pos_t[1],joint_pos_t[2],joint_pos_t[3],joint_pos_t[4],joint_pos_t[5], desc_pos_t[0],desc_pos_t[1],desc_pos_t[2],desc_pos_t[3],desc_pos_t[4],desc_pos_t[5], tool_t, user_t, vel_t, acc_t, exaxis_pos_t[0],exaxis_pos_t[1],exaxis_pos_t[2],exaxis_pos_t[3],
+                                         offset_flag_t, offset_pos_t[0],offset_pos_t[1],offset_pos_t[2],offset_pos_t[3],offset_pos_t[4],offset_pos_t[5], ovl, blendR,100.0,velAccParamMode])
                 flag = False
             except socket.error as e:
                 flag = True
         return error
 
     """   
-    @brief  笛卡尔空间整圆运动
+    @brief  笛卡尔空间整圆运动(自动正/逆运动学计算)
     @param  [in] 必选参数 desc_pos_p: 路径点笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool_p: 路径点工具号，[0~14]
     @param  [in] 必选参数 user_p: 路径点工件号，[0~14]
@@ -1157,6 +1165,8 @@ class RPC():
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @param  [in] 默认参数 oacc: 加速度百分比，默认：100
     @param  [in] 默认参数 blendR: -1：阻塞；0~1000：平滑半径 默认：-1
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
+    @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
     @return 错误码 成功-0  失败-错误码
     """
 
@@ -1166,37 +1176,39 @@ class RPC():
                joint_pos_t=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                vel_p=20.0, acc_p=0.0, exaxis_pos_p=[0.0, 0.0, 0.0, 0.0], vel_t=20.0, acc_t=0.0,
                exaxis_pos_t=[0.0, 0.0, 0.0, 0.0],
-               ovl=100.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], oacc=100.0, blendR=-1):
+               ovl=100.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], oacc=100.0, blendR=-1,config=-1,velAccParamMode=0):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         desc_pos_p = list(map(float, desc_pos_p))
-        tool_p = float(int(tool_p))
-        user_p = float(int(user_p))
+        tool_p = int(tool_p)
+        user_p = int(user_p)
         joint_pos_p = list(map(float, joint_pos_p))
         vel_p = float(vel_p)
         acc_p = float(acc_p)
         exaxis_pos_p = list(map(float, exaxis_pos_p))
 
         desc_pos_t = list(map(float, desc_pos_t))
-        tool_t = float(int(tool_t))
-        user_t = float(int(user_t))
+        tool_t = int(tool_t)
+        user_t = int(user_t)
         joint_pos_t = list(map(float, joint_pos_t))
         vel_t = float(vel_t)
         acc_t = float(acc_t)
         exaxis_pos_t = list(map(float, exaxis_pos_t))
 
         ovl = float(ovl)
-        offset_flag = float(int(offset_flag))
+        offset_flag = int(offset_flag)
         offset_pos = list(map(float, offset_pos))
 
         oacc = float(oacc)
         blendR = float(blendR)
+        config = int(config)
+        velAccParamMode = int(velAccParamMode)
 
         if ((joint_pos_p[0] == 0.0) and (joint_pos_p[1] == 0.0) and (joint_pos_p[2] == 0.0) and (joint_pos_p[3] == 0.0)
                 and (joint_pos_p[4] == 0.0) and (joint_pos_p[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            retp = self.robot.GetInverseKin(0, desc_pos_p, -1)  # 逆运动学求解
+            retp = self.robot.GetInverseKin(0, desc_pos_p, config)  # 逆运动学求解
             if retp[0] == 0:
                 joint_pos_p = [retp[1], retp[2], retp[3], retp[4], retp[5], retp[6]]
             else:
@@ -1205,7 +1217,7 @@ class RPC():
 
         if ((joint_pos_t[0] == 0.0) and (joint_pos_t[1] == 0.0) and (joint_pos_t[2] == 0.0) and (joint_pos_t[3] == 0.0)
                 and (joint_pos_t[4] == 0.0) and (joint_pos_t[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            rett = self.robot.GetInverseKin(0, desc_pos_t, -1)  # 逆运动学求解
+            rett = self.robot.GetInverseKin(0, desc_pos_t, config)  # 逆运动学求解
             if rett[0] == 0:
                 joint_pos_t = [rett[1], rett[2], rett[3], rett[4], rett[5], rett[6]]
             else:
@@ -1215,9 +1227,9 @@ class RPC():
         flag = True
         while flag:
             try:
-                error = self.robot.Circle(joint_pos_p, desc_pos_p, [tool_p, user_p, vel_p, acc_p], exaxis_pos_p, joint_pos_t,
-                                          desc_pos_t,
-                                          [tool_t, user_t, vel_t, acc_t], exaxis_pos_t, [ovl, offset_flag], offset_pos, [oacc, blendR])
+                error = self.robot.Circle([joint_pos_p[0],joint_pos_p[1],joint_pos_p[2],joint_pos_p[3],joint_pos_p[4],joint_pos_p[5], desc_pos_p[0],desc_pos_p[1],desc_pos_p[2],desc_pos_p[3],desc_pos_p[4],desc_pos_p[5], tool_p, user_p, vel_p, acc_p, exaxis_pos_p[0],exaxis_pos_p[1],exaxis_pos_p[2],exaxis_pos_p[3],
+                                           joint_pos_t[0],joint_pos_t[1],joint_pos_t[2],joint_pos_t[3],joint_pos_t[4],joint_pos_t[5], desc_pos_t[0],desc_pos_t[1],desc_pos_t[2],desc_pos_t[3],desc_pos_t[4],desc_pos_t[5],
+                                          tool_t, user_t, vel_t, acc_t, exaxis_pos_t[0],exaxis_pos_t[1],exaxis_pos_t[2],exaxis_pos_t[3], ovl, offset_flag, offset_pos[0],offset_pos[1],offset_pos[2],offset_pos[3],offset_pos[4],offset_pos[5], oacc, blendR,velAccParamMode])
                 flag = False
             except socket.error as e:
                 flag = True
@@ -1285,7 +1297,7 @@ class RPC():
     #     return error
 
     """   
-    @brief  笛卡尔空间螺旋线运动
+    @brief  笛卡尔空间螺旋线运动(自动正/逆运动学计算)
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
@@ -1298,6 +1310,7 @@ class RPC():
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认100.0
     @param  [in] 默认参数 offset_flag:[0]-不偏移，[1]-工件/基坐标系下偏移，[2]-工具坐标系下偏移 默认 0
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @return 错误码 成功-0  失败-错误码
     """
 
@@ -1305,7 +1318,7 @@ class RPC():
     @xmlrpc_timeout
     def NewSpiral(self, desc_pos, tool, user, param, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0,
                   exaxis_pos=[0.0, 0.0, 0.0, 0.0],
-                  ovl=100.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+                  ovl=100.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],config=-1):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -1326,10 +1339,11 @@ class RPC():
         ovl = float(ovl)
         offset_flag = int(offset_flag)
         offset_pos = list(map(float, offset_pos))
+        config = int(config)
 
         if ((joint_pos[0] == 0.0) and (joint_pos[1] == 0.0) and (joint_pos[2] == 0.0) and (joint_pos[3] == 0.0)
                 and (joint_pos[4] == 0.0) and (joint_pos[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            ret = self.robot.GetInverseKin(0, desc_pos, -1)  # 逆运动学求解
+            ret = self.robot.GetInverseKin(0, desc_pos, config)  # 逆运动学求解
             if ret[0] == 0:
                 joint_pos = [ret[1], ret[2], ret[3], ret[4], ret[5], ret[6]]
             else:
@@ -1588,7 +1602,7 @@ class RPC():
         return error
 
     """   
-    @brief  样条运动 PTP
+    @brief  样条运动 PTP(自动正/逆运动学计算)
     @param  [in] 必选参数 joint_pos: 目标关节位置，单位 [°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
@@ -1677,7 +1691,7 @@ class RPC():
         return error
 
     """   
-    @brief  新样条指令点
+    @brief  新样条指令点(自动正/逆运动学计算)
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
@@ -1687,13 +1701,14 @@ class RPC():
     @param  [in] 默认参数 acc: 加速度，范围 [0~100]，暂不开放，默认为 0.0
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认为 100.0
     @param  [in] 默认参数 blendR: [0~1000]-平滑半径，单位 [mm] 默认0.0
+    @param  [in] 默认参数 config: 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解,默认-1
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
     def NewSplinePoint(self, desc_pos, tool, user, lastFlag, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=0.0,
-                       acc=0.0, ovl=100.0, blendR=0.0):
+                       acc=0.0, ovl=100.0, blendR=0.0, config=-1):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -1707,9 +1722,10 @@ class RPC():
         acc = float(acc)
         ovl = float(ovl)
         blendR = float(blendR)
+        config = int(config)
         if ((joint_pos[0] == 0.0) and (joint_pos[1] == 0.0) and (joint_pos[2] == 0.0) and (joint_pos[3] == 0.0)
                 and (joint_pos[4] == 0.0) and (joint_pos[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            ret = self.robot.GetInverseKin(0, desc_pos, -1)  # 逆运动学求解
+            ret = self.robot.GetInverseKin(0, desc_pos, config)  # 逆运动学求解
             if ret[0] == 0:
                 joint_pos = [ret[1], ret[2], ret[3], ret[4], ret[5], ret[6]]
             else:
@@ -8332,13 +8348,13 @@ class RPC():
     @brief  UDP扩展轴运动
     @param [in]必选参数 pos 目标位置 轴 1 位置 ~ 轴 4 位置[exaxis[0],exaxis[1],exaxis[2],exaxis[3]]
     @param [in]必选参数 ovl 速度百分比
-    @param [in]必选参数 blend 平滑参数(mm或ms)
+    @param [in]必选参数 blend 平滑参数(mm或ms)，-1,等待运动完成
     @return 错误码 成功- 0, 失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ExtAxisMove(self, pos, ovl, blend):
+    def ExtAxisMove(self, pos, ovl, blend=-1):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -8357,7 +8373,7 @@ class RPC():
         return error
 
     """   
-    @brief  UDP扩展轴与机器人关节运动同步运动
+    @brief  UDP扩展轴与机器人关节运动同步运动(自动正/逆运动学计算)
     @param  [in] 必选参数 joint_pos: 目标关节位置，单位 [°]
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
@@ -8374,7 +8390,7 @@ class RPC():
 
     @log_call
     @xmlrpc_timeout
-    def ExtAxisSyncMoveJ(self, joint_pos, desc_pos, tool, user, exaxis_pos, vel=20.0, acc=0.0, ovl=100.0,
+    def ExtAxisSyncMoveJ(self, joint_pos, tool, user, exaxis_pos, desc_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
                          blendT=-1.0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
         while self.reconnect_flag:
             time.sleep(0.1)
@@ -8414,7 +8430,7 @@ class RPC():
         return error
 
     """   
-    @brief  UDP扩展轴与机器人直线运动同步运动
+    @brief  UDP扩展轴与机器人直线运动同步运动(自动正/逆运动学计算)
     @param  [in] 必选参数 joint_pos: 目标关节位置，单位 [°] 
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
@@ -8427,13 +8443,14 @@ class RPC():
     @param  [in] 默认参数 search:[0]-不焊丝寻位，[1]-焊丝寻位
     @param  [in] 默认参数 offset_flag:[0]-不偏移，[1]-工件/基坐标系下偏移，[2]-工具坐标系下偏移 默认 0
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ExtAxisSyncMoveL(self, joint_pos, desc_pos, tool, user, exaxis_pos, vel=20.0, acc=0.0, ovl=100.0,
-                         blendR=-1.0, search=0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+    def ExtAxisSyncMoveL(self, desc_pos, tool, user, exaxis_pos, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
+                         blendR=-1.0, search=0, offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],config=-1):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -8450,9 +8467,11 @@ class RPC():
         search = int(search)
         offset_flag = int(offset_flag)
         offset_pos = list(map(float, offset_pos))
+        config = int(config)
+
         if ((joint_pos[0] == 0.0) and (joint_pos[1] == 0.0) and (joint_pos[2] == 0.0) and (joint_pos[3] == 0.0)
                 and (joint_pos[4] == 0.0) and (joint_pos[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            ret = self.robot.GetInverseKin(0, desc_pos, -1)  # 逆运动学求解
+            ret = self.robot.GetInverseKin(0, desc_pos, config)  # 逆运动学求解
             if ret[0] == 0:
                 joint_pos = [ret[1], ret[2], ret[3], ret[4], ret[5], ret[6]]
             else:
@@ -8473,7 +8492,7 @@ class RPC():
         return error
 
     """   
-    @brief  UDP扩展轴与机器人圆弧运动同步运动
+    @brief  UDP扩展轴与机器人圆弧运动同步运动(自动正/逆运动学计算)
     @param  [in] 必选参数 joint_pos_p: 路径点关节位置，单位 [°] 
     @param  [in] 必选参数 desc_pos_p: 路径点笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool_p: 路径点工具号，[0~14]
@@ -8494,18 +8513,20 @@ class RPC():
     @param  [in] 默认参数 offset_pos_t: 目标点位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认100.0
     @param  [in] 默认参数 blendR:[-1.0]-运动到位 (阻塞)，[0~1000]-平滑半径 (非阻塞)，单位 [mm] 默认-1.0
+    @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ExtAxisSyncMoveC(self, joint_pos_p, desc_pos_p, tool_p, user_p, exaxis_pos_p, joint_pos_t, desc_pos_t, tool_t,
+    def ExtAxisSyncMoveC(self, desc_pos_p, tool_p, user_p, exaxis_pos_p, desc_pos_t, tool_t,
                          user_t, exaxis_pos_t,
+                         joint_pos_p=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], joint_pos_t=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                          vel_p=20.0, acc_p=100.0, offset_flag_p=0,
                          offset_pos_p=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                          vel_t=20.0, acc_t=100.0, offset_flag_t=0,
                          offset_pos_t=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                         ovl=100.0, blendR=-1.0):
+                         ovl=100.0, blendR=-1.0,config=-1):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -8532,10 +8553,11 @@ class RPC():
 
         ovl = float(ovl)
         blendR = float(blendR)
+        config = int(config)
 
         if ((joint_pos_p[0] == 0.0) and (joint_pos_p[1] == 0.0) and (joint_pos_p[2] == 0.0) and (joint_pos_p[3] == 0.0)
                 and (joint_pos_p[4] == 0.0) and (joint_pos_p[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            retp = self.robot.GetInverseKin(0, desc_pos_p, -1)  # 逆运动学求解
+            retp = self.robot.GetInverseKin(0, desc_pos_p, config)  # 逆运动学求解
             if retp[0] == 0:
                 joint_pos_p = [retp[1], retp[2], retp[3], retp[4], retp[5], retp[6]]
             else:
@@ -8544,7 +8566,7 @@ class RPC():
 
         if ((joint_pos_t[0] == 0.0) and (joint_pos_t[1] == 0.0) and (joint_pos_t[2] == 0.0) and (joint_pos_t[3] == 0.0)
                 and (joint_pos_t[4] == 0.0) and (joint_pos_t[5] == 0.0)):  # 若未输入参数则调用逆运动学求解
-            rett = self.robot.GetInverseKin(0, desc_pos_t, -1)  # 逆运动学求解
+            rett = self.robot.GetInverseKin(0, desc_pos_t, config)  # 逆运动学求解
             if rett[0] == 0:
                 joint_pos_t = [rett[1], rett[2], rett[3], rett[4], rett[5], rett[6]]
             else:
@@ -11482,7 +11504,7 @@ class RPC():
         flag = True
         while flag:
             try:
-                error = self.robot.LaserTrackingSearchStart(direction, directionPoint, vel, distance, timeout, posSensorNum)
+                error = self.robot.LaserTrackingSearchStart(direction, directionPoint[0], directionPoint[1], directionPoint[2], vel, distance, timeout, posSensorNum)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -11574,13 +11596,14 @@ class RPC():
        @param  [in] vamx 设定的最大速度，mm/s
        @param  [in] amax 设定的最大加速度，mm/s2
        @param  [in] jmax 设定的最大加加速度，mm/s3
+       @param  [in] flag 匀速前瞻开启开关 0-不开启；1-开启
        @return 错误码 成功- 0, 失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
 
-    def LoadTrajectoryLA(self, name, mode, errorLim, type, precision, vamx, amax, jmax):
+    def LoadTrajectoryLA(self, name, mode, errorLim, type, precision, vamx, amax, jmax, flag):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -11593,13 +11616,15 @@ class RPC():
         vamx = float(vamx)
         amax = float(amax)
         jmax = float(jmax)
-        flag = True
-        while flag:
+        flag = int(flag)
+
+        flag_tmp = True
+        while flag_tmp:
             try:
-                error = self.robot.LoadTrajectoryLA(name, mode, errorLim, type, precision, vamx, amax, jmax)
-                flag = False
+                error = self.robot.LoadTrajectoryLA(name, mode, errorLim, type, precision, vamx, amax, jmax, flag)
+                flag_tmp = False
             except socket.error as e:
-                flag = True
+                flag_tmp = True
 
         return error
 
@@ -12528,5 +12553,346 @@ class RPC():
         errcode = self.__FileUpLoad(5, path)
         if errcode == 0:
             error = self.robot.JointAllParamUpgrade()
+            return error
+        return errcode
+
+    """2025.07.21"""
+    """3.8.5"""
+    """
+    @brief 激光传感器记录点
+    @param  [in] coordID 激光传感器坐标系
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） joint 激光传感器识别点关节位置
+    @return 返回值（调用成功返回） desc 激光传感器识别点笛卡尔位置
+    @return 返回值（调用成功返回） exaxis 激光传感器识别点扩展轴位置
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def LaserRecordPoint(self, coordID):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        coordID = int(coordID)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.LaserRecordPoint(coordID,0,100)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            param_str = str(_error[1])
+            par_s = param_str.split(',')
+            if len(par_s) != 16:
+                return -1, None, None, None
+            return (error, [float(par_s[0]),float(par_s[1]),float(par_s[2]),float(par_s[3]),float(par_s[4]),float(par_s[5])],
+                    [float(par_s[6]),float(par_s[7]),float(par_s[8]),float(par_s[9]),float(par_s[10]),float(par_s[11])],
+                    [float(par_s[12]),float(par_s[13]),float(par_s[14]),float(par_s[15])])
+        return error, None, None, None
+
+    """2025.08.07"""
+    """
+    @brief 设置扩展轴与机器人同步运动策略
+    @param  [in] strategy 策略；0-以机器人为主；1-扩展轴与机器人同步
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetExAxisRobotPlan(self, strategy):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        strategy = int(strategy)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetExAxisRobotPlan(strategy)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """2025.08.12"""
+    """
+    @brief 获取从站板卡参数
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） type  0-Ethercat，1-CClink, 3-Ethercat, 4-EIP
+    @return 返回值（调用成功返回） version  协议版本
+    @return 返回值（调用成功返回） connState  0-未连接 1-已连接
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetFieldBusConfig(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetFieldBusConfig()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            return error, _error[2], _error[3], _error[4]
+        return error, None, None, None
+
+    """
+    @brief 写入从站DO
+    @param  [in] DOIndex  DO编号
+    @param  [in] wirteNum  写入的数量
+    @param  [in] status[8] 写入的数值，最多写8个
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveWriteDO(self, DOIndex, wirteNum, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        DOIndex = int(DOIndex)
+        wirteNum = int(wirteNum)
+        status = list(map(int, status))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FieldBusSlaveWriteDO(DOIndex, wirteNum, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 写入从站AO
+    @param  [in] AOIndex  AO编号
+    @param  [in] wirteNum  写入的数量
+    @param  [in] status[8] 写入的数值，最多写8个
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveWriteAO(self, AOIndex, wirteNum, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        AOIndex = int(AOIndex)
+        wirteNum = int(wirteNum)
+        status = list(map(int, status))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FieldBusSlaveWriteAO(AOIndex, wirteNum, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 读取从站DI
+    @param  [in] DOIndex  DI编号
+    @param  [in] readeNum  读取的数量
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） status[8] 读取到的数值，最多读8个
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveReadDI(self, DOIndex, readeNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        DOIndex = int(DOIndex)
+        readeNum = int(readeNum)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.FieldBusSlaveReadDI(DOIndex, readeNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            return error, _error[1:readeNum+1]
+        return error, None
+
+    """
+    @brief 读取从站AI
+    @param  [in] AOIndex  AI编号
+    @param  [in] readeNum  读取的数量
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） status[8] 读取到的数值，最多读8个
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveReadAI(self, AOIndex, readeNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        AOIndex = int(AOIndex)
+        readeNum = int(readeNum)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.FieldBusSlaveReadAI(AOIndex, readeNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            return error, _error[1:readeNum + 1]
+        return error, None
+
+    """
+    @brief 等待扩展DI输入
+    @param  [in] DIIndex DI编号
+    @param  [in] status 0-低电平；1-高电平
+    @param  [in] waitMs 最大等待时间(ms)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveWaitDI(self, DIIndex, status, waitMs):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        DIIndex = int(DIIndex)
+        status = int(status)
+        waitMs = int(waitMs)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FieldBusSlaveWaitDI(DIIndex, status, waitMs)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 等待扩展AI输入
+    @param  [in] AIIndex AI编号
+    @param  [in] waitType 0-大于；1-小于
+    @param  [in] value AI值
+    @param  [in] waitMs 最大等待时间(ms)
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def FieldBusSlaveWaitAI(self, AIIndex, waitType, value, waitMs):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        AIIndex = int(AIIndex)
+        waitType = int(waitType)
+        value = float(value)
+        waitMs = int(waitMs)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.FieldBusSlaveWaitAI(AIIndex, waitType, value, waitMs)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 控制阵列式吸盘
+    @param  [in] slaveID 从站号
+    @param  [in] len 长度
+    @param  [in] ctrlValue 控制值 1-按最大真空度吸取 2-按设定真空度吸取 3-停止吸取
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetSuckerCtrl(self, slaveID, len, ctrlValue):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        slaveID = int(slaveID)
+        len = int(len)
+        ctrlValue = list(map(int, ctrlValue))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetSuckerCtrl(slaveID, len, ctrlValue)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取阵列式吸盘状态
+    @param  [in] slaveID 从站号
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） state 吸附状态 0-释放物体 1-检测到工件吸附成功 2-没有吸附到物体 3-物体脱离
+    @return 返回值（调用成功返回） pressValue 当前真空度 单位kpa
+    @return 返回值（调用成功返回） error 吸盘当前的错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetSuckerState(self, slaveID):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        slaveID = int(slaveID)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetSuckerState(slaveID)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            return error, _error[1], _error[2], _error[3]
+        return error, None, None, None
+
+    """
+    @brief 等待吸盘状态
+    @param  [in] slaveID 从站号
+    @param  [in] state 吸附状态 0-释放物体 1-检测到工件吸附成功 2-没有吸附到物体 3-物体脱离
+    @param  [in] ms 等待最大时间
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def WaitSuckerState(self, slaveID, state, ms):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        slaveID = int(slaveID)
+        state = int(state)
+        ms = int(ms)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.WaitSuckerState(slaveID, state, ms)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+
+    """
+    @brief 上传开放协议的Lua文件
+    @param  [in] filePath 本地开放协议lua文件路径名
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def OpenLuaUpload(self, filePath):
+        filePath =str(filePath)
+        errcode = self.__FileUpLoad(11, filePath)
+        if errcode == 0:
+            pos = filePath.rfind('/')
+            if pos == -1:
+                return RobotError.ERR_FILE_NAME
+            filename = filePath[pos + 1:]  # 获取文件名部分
+            error = self.robot.CtrlOpenLuaUpLoadCheck(filename)
             return error
         return errcode

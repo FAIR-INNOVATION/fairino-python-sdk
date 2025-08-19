@@ -55,5 +55,30 @@ def TestFirmWareUpgrade(self):
     print(f"robot SetJointFirmwareUpgrade rtn is {rtn}")
     robot.CloseRPC()
 
-TestExtAxisMoveBlend(robot)
+def TestFirmWareUpgrade2(self):
+    robot.RobotEnable(0)
+    time.sleep(0.2)  # 200ms
+    rtn = robot.JointAllParamUpgrade("D://zUP/standardQX/jointallparametersFR56.0.db")
+    print(f"robot JointAllParamUpgrade rtn is {rtn}")
+
+    rtn = robot.SetCtrlFirmwareUpgrade(2, "D://zUP/standardQX/FAIR_Cobot_Cbd_Asix_V2.0.bin")
+    print(f"robot SetCtrlFirmwareUpgrade rtn is {rtn}")
+    rtn = robot.SetEndFirmwareUpgrade(2, "D://zUP/standardQX/FAIR_Cobot_Axle_Asix_V2.4.bin")
+    print(f"robot SetEndFirmwareUpgrade rtn is {rtn}")
+
+    robot.SetSysServoBootMode()
+    time.sleep(0.2)  # 200ms
+
+    rtn = robot.SetCtrlFirmwareUpgrade(1, "D://zUP/standardQX/FR_CTRL_PRIMCU_FV201010_MAIN_U4_T01_20240529.bin")
+    print(f"robot SetCtrlFirmwareUpgrade rtn is {rtn}")
+    rtn = robot.SetEndFirmwareUpgrade(1, "D://zUP/standardQX/FR_END_FV201010_MAIN_U01_T01_20250522.bin")
+    print(f"robot SetEndFirmwareUpgrade rtn is {rtn}")
+    rtn = robot.SetJointFirmwareUpgrade(1, "D://zUP/standardQX/FR_SERVO_FV502211_MAIN_U7_T07_20250217.bin")
+    print(f"robot SetJointFirmwareUpgrade rtn is {rtn}")
+    robot.CloseRPC()
+
+# TestExtAxisMoveBlend(robot)
+
+
 # TestFirmWareUpgrade(robot)
+TestFirmWareUpgrade2(robot)
