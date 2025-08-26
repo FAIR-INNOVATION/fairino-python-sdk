@@ -6,4 +6,4 @@ This is a Python language SDK library specially designed for fairino collaborati
 
 Documentation
 ----------------
-Please see [Python SDK](https://fair-documentation.readthedocs.io/en/latest/SDKManual/python_intro.html)。
+Please see [Python SDK](https://fairino-doc-en.readthedocs.io/latest/SDKManual/python_intro.html)。
