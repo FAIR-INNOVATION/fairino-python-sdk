@@ -139,6 +139,8 @@ class RobotStatePkg(Structure):
         ("exAxisCoord", ctypes.c_double * 6),  # 扩展轴坐标系
         ("load", ctypes.c_double),  # 负载质量
         ("loadCog", ctypes.c_double * 3),  # 负载质心
+        ("lastServoTarget", ctypes.c_double * 6),  # 队列中最后一个ServoJ目标位置                                          2025.10.15---3.8.7
+        ("servoJCmdNum", ctypes.c_int),  # ServoJ指令计数
         ("check_sum", ctypes.c_uint16)]  # 校验和
 
 
@@ -285,7 +287,7 @@ class RPC():
         """连接到机器人的实时端口"""
         # print("SDK连接机器人")
         self.sock_cli_state = socket.socket(socket.AF_INET, socket.SOCK_STREAM)#套接字连接机器人20004端口，用于实时更新机器人状态数据
-        self.sock_cli_state.settimeout(0.03)  # 设置超时时间为 0.05 秒
+        self.sock_cli_state.settimeout(0.3)  # 设置超时时间为 0.05 秒
         try:
             self.sock_cli_state.connect((self.ip_address, self.ROBOT_REALTIME_PORT))
             self.sock_cli_state_state = True
@@ -566,7 +568,7 @@ class RPC():
                     self.sock_cli_state.close()
                     self.sock_cli_state_state = False
                     self.SDK_state = False
-                    print("SDK读取机器人实时数据失败", ex)
+                    # print("SDK读取机器人实时数据失败", ex)
                     self.reconnect()
 
     def robot_state_routine_thread_new(self):
@@ -710,7 +712,7 @@ class RPC():
                     self.sock_cli_state.close()
                     self.sock_cli_state_state = False
                     self.SDK_state = False
-                    print("SDK读取机器人实时数据失败", ex)
+                    # print("SDK读取机器人实时数据失败", ex)
                     self.reconnect()
 
     def setup_logging(self, output_model=1, file_path="", file_num=5):
@@ -878,7 +880,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.1.6", "Robot:V3.8.6"]
+        sdk = ["SDK:V2.1.7", "Robot:V3.8.7"]
         return error, sdk
 
     """   
@@ -1454,8 +1456,8 @@ class RPC():
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位姿，单位 [mm][°]
     @param  [in] 必选参数 tool: 工具号，[0~14]
     @param  [in] 必选参数 user: 工件号，[0~14]
-    @param  [in] 必选参数 param:[circle_num, circle_angle, rad_init, rad_add, rotaxis_add, rot_direction]circle_num: 螺旋圈数，circle_angle: 螺旋倾角，
-    rad_init: 螺旋初始半径，rad_add: 半径增量，rotaxis_add: 转轴方向增量，rot_direction: 旋转方向，0-顺时针，1-逆时针
+    @param  [in] 必选参数 param:[circle_num, circle_angle, rad_init, rad_add, rotaxis_add, rot_direction, velAccMode]circle_num: 螺旋圈数，circle_angle: 螺旋倾角，
+    rad_init: 螺旋初始半径，rad_add: 半径增量，rotaxis_add: 转轴方向增量，rot_direction: 旋转方向，0-顺时针，1-逆时针, velAccMode速度加速度参数模式：0-角速度恒定，1-线速度恒定
     @param  [in] 默认参数 joint_pos: 目标关节位置，单位 [°] 默认初值为[0.0,0.0,0.0,0.0,0.0,0.0]，默认值调用逆运动学求解返回值
     @param  [in] 默认参数 vel：速度百分比，[0~100] 默认20.0
     @param  [in] 默认参数 acc：加速度百分比，[0~100] 默认100.0
@@ -1479,12 +1481,13 @@ class RPC():
         desc_pos = list(map(float, desc_pos))
         tool = int(tool)
         user = int(user)
-        param[0] = float(param[0])
+        param[0] = int(param[0])
         param[1] = float(param[1])
         param[2] = float(param[2])
         param[3] = float(param[3])
         param[4] = float(param[4])
-        param[5] = float(param[5])
+        param[5] = int(param[5])
+        param[6] = int(param[6])
         joint_pos = list(map(float, joint_pos))
         vel = float(vel)
         acc = float(acc)
@@ -1505,8 +1508,12 @@ class RPC():
         flag = True
         while flag:
             try:
-                error = self.robot.NewSpiral(joint_pos, desc_pos, tool, user, vel, acc, exaxis_pos, ovl, offset_flag,
-                                             offset_pos, param)
+                error = self.robot.NewSpiral([joint_pos[0],joint_pos[1],joint_pos[2],joint_pos[3],joint_pos[4],joint_pos[5],
+                                              desc_pos[0],desc_pos[1],desc_pos[2],desc_pos[3],desc_pos[4],desc_pos[5],
+                                              tool, user, vel, acc, exaxis_pos[0],exaxis_pos[1],exaxis_pos[2],exaxis_pos[3],
+                                              ovl, offset_flag,
+                                             offset_pos[0],offset_pos[1],offset_pos[2],offset_pos[3],offset_pos[4],offset_pos[5],
+                                              float(param[0]),param[1],param[2],param[3],param[4],int(param[5]),param[6]])
                 flag = False
             except socket.error as e:
                 flag = True
@@ -5448,15 +5455,17 @@ class RPC():
     """   
     @brief  恒力控制
     @param  [in] 必选参数 flag：0-关闭碰撞守护，1-开启碰撞守护；
-    @param  [in] 必选参数 sensor_num：力传感器编号
+    @param  [in] 必选参数 sensor_id：力传感器编号
     @param  [in] 必选参数 select：[fx,fy,fz,mx,my,mz]六个自由度是否检测碰撞 ，0-不生效，1-生效
-    @param  [in] 必选参数 force_torque：[fx,fy,fz,mx,my,mz]碰撞检测力/力矩，单位 N 或 Nm
-    @param  [in] 必选参数 gain：[f_p,f_i,f_d,m_p,m_i,m_d], 力PID参数，力矩PID参数
+    @param  [in] 必选参数 ft：[fx,fy,fz,mx,my,mz]碰撞检测力/力矩，单位 N 或 Nm
+    @param  [in] 必选参数 ft_pid：[f_p,f_i,f_d,m_p,m_i,m_d], 力PID参数，力矩PID参数
     @param  [in] 必选参数 adj_sign：自适应启停状态，0-关闭，1-开启
     @param  [in] 必选参数 ILC_sign: ILC 控制启停状态，0-停止，1-训练，2-实操
     @param  [in] 必选参数 max_dis：最大调整距离，单位mm
     @param  [in] 必选参数 max_ang：最大调整角度，单位deg
-    @param  [in] 必选参数 r：打磨盘半径，单位mm
+    @param  [in] 必选参数 M 质量参数
+    @param  [in] 必选参数 B 阻尼参数
+    @param  [in] 默认参数 polishRadio：打磨盘半径，单位mm
     @param  [in] 默认参数 filter_Sign 滤波开启标志 0-关；1-开，默认 0-关闭
     @param  [in] 默认参数 posAdapt_sign 姿态顺应开启标志 0-关；1-开，默认 0-关闭
     @param  [in] 默认参数 isNoBlock 阻塞标志，0-阻塞；1-非阻塞 默认0-阻塞
@@ -5465,27 +5474,35 @@ class RPC():
 
     @log_call
     @xmlrpc_timeout
-    def FT_Control(self, flag, sensor_num, select, force_torque, gain, adj_sign, ILC_sign, max_dis, max_ang,filter_Sign=0, posAdapt_sign=0,isNoBlock=0):
+    def FT_Control(self, flag, sensor_id, select, ft, ft_pid, adj_sign, ILC_sign, max_dis, max_ang, M=None, B=None, polishRadio=0, filter_Sign=0, posAdapt_sign=0, isNoBlock=0):
+        if M is None:
+            M = [0, 0]
+        if B is None:
+            B = [0, 0]
         while self.reconnect_flag:
             time.sleep(0.1)
         flag = int(flag)
-        sensor_num = int(sensor_num)
+        sensor_id = int(sensor_id)
         select = list(map(int, select))
-        force_torque = list(map(float, force_torque))
-        gain = list(map(float, gain))
+        ft = list(map(float, ft))
+        ft_pid = list(map(float, ft_pid))
         adj_sign = int(adj_sign)
         ILC_sign = int(ILC_sign)
         max_dis = float(max_dis)
         max_ang = float(max_ang)
 
+
+        M = list(map(float, M))
+        B = list(map(float, B))
+        polishRadio = float(polishRadio)
         filter_Sign = int(filter_Sign)
         posAdapt_sign = int(posAdapt_sign)
         isNoBlock = int(isNoBlock)
         flag_tmp = True
         while flag_tmp:
             try:
-                error = self.robot.FT_Control(flag, sensor_num, select, force_torque, gain, adj_sign, ILC_sign, max_dis,
-                                              max_ang, filter_Sign, posAdapt_sign,isNoBlock)
+                error = self.robot.FT_Control(flag, sensor_id, select, ft, ft_pid, adj_sign, ILC_sign, max_dis,
+                                              max_ang,polishRadio, filter_Sign, posAdapt_sign,[M[0],M[1],B[0],B[0]],isNoBlock)
                 flag_tmp = False
             except socket.error as e:
                 flag_tmp = True
@@ -13487,7 +13504,7 @@ class RPC():
         error = _error[0]
         if error == 0:
             paramStr = str(_error[1])
-            print(f"{paramStr}\n")
+            # print(f"{paramStr}\n")
 
             parS = paramStr.split(',')
             if len(parS) != 20:
@@ -13801,7 +13818,7 @@ class RPC():
         error = _error[0]
         if error == 0:
             paramStr = str(_error[1])
-            print(f"{paramStr}\n")
+            # print(f"{paramStr}\n")
 
             parS = paramStr.split(',')
             if len(parS) != 44:
@@ -13836,8 +13853,19 @@ class RPC():
         filePath = str(filePath)
         errcode = self.__FileUpLoad(6, filePath)
         if errcode == 0:
-            error = self.robot.KernelUpgrade()
-            return error
+            try:
+                result = self.robot.KernelUpgrade()
+                if result is not None and hasattr(result, '__len__') and len(result) == 0:
+                    # print("警告: 内核升级调用成功，但返回空数据")
+                    return 0
+                return result if result is not None else 0
+            except xmlrpc.client.Fault as e:
+                if "array has only 0 items" in str(e):
+                    # print("内核升级指令已发送，但服务器返回空响应")
+                    return 0
+                else:
+                    # print(f"内核升级失败: {e}")
+                    return -1
         return errcode
 
     """
@@ -13862,3 +13890,217 @@ class RPC():
         if error == 0:
             return error, _error[1]
         return error, None
+
+    """3.8.7"""
+    """2025.10.11"""
+    """
+    @brief 关节扭矩传感器灵敏度标定功能开启
+    @param [in] status 0-关闭；1-开启
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointSensitivityEnable(self, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        status = int(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.JointSensitivityEnable([status])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取关节扭矩传感器灵敏度标定结果
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） calibResult j1~j6关节灵敏度[0-1]
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointSensitivityCalibration(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.JointSensitivityCalibration()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
+        return error, None
+
+    """
+    @brief 关节扭矩传感器灵敏度数据采集
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointSensitivityCollect(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.JointSensitivityCollect()
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """2025.10.15"""
+    """
+    @brief 清空运动指令队列
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def MotionQueueClear(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.MotionQueueClear()
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取机器人8个从站端口错误帧数
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） inRecvErr 输入接收错误帧数
+    @return 返回值（调用成功返回） inCRCErr 输入CRC错误帧数
+    @return 返回值（调用成功返回） inTransmitErr 输入转发错误帧数
+    @return 返回值（调用成功返回） inLinkErr 输入链接错误帧数
+    @return 返回值（调用成功返回） outRecvErr 输出接收错误帧数
+    @return 返回值（调用成功返回） outCRCErr 输出CRC错误帧数
+    @return 返回值（调用成功返回） outTransmitErr 输出转发错误帧数
+    @return 返回值（调用成功返回） outLinkErr 输出链接错误帧数
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetSlavePortErrCounter(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetSlavePortErrCounter()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            paramStr = str(_error[1])
+            # print(f"{paramStr}\n")
+
+            parS = paramStr.split(',')
+            if len(parS) != 64:
+                return -1, None, None, None, None, None, None, None, None
+            return (error,
+                    [int(parS[0]), int(parS[4]), int(parS[8]), int(parS[12]), int(parS[16]), int(parS[20]), int(parS[24]), int(parS[28])],
+                    [int(parS[1]), int(parS[5]), int(parS[9]), int(parS[13]), int(parS[17]), int(parS[21]), int(parS[25]), int(parS[29])],
+                    [int(parS[2]), int(parS[6]), int(parS[10]), int(parS[14]), int(parS[18]), int(parS[22]), int(parS[26]), int(parS[30])],
+                    [int(parS[3]), int(parS[7]), int(parS[11]), int(parS[15]), int(parS[19]), int(parS[23]), int(parS[27]), int(parS[31])],
+                    [int(parS[32]), int(parS[36]), int(parS[40]), int(parS[44]), int(parS[48]), int(parS[52]), int(parS[56]), int(parS[60])],
+                    [int(parS[33]), int(parS[37]), int(parS[41]), int(parS[45]), int(parS[49]), int(parS[53]), int(parS[57]), int(parS[61])],
+                    [int(parS[34]), int(parS[38]), int(parS[42]), int(parS[46]), int(parS[50]), int(parS[54]), int(parS[58]), int(parS[62])],
+                    [int(parS[35]), int(parS[39]), int(parS[43]), int(parS[47]), int(parS[51]), int(parS[55]), int(parS[59]), int(parS[63])])
+        return error, None, None, None, None, None, None, None, None
+
+    """
+    @brief 从站端口错误帧清零
+    @param [in] slaveID 从站编号0~7
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SlavePortErrCounterClear(self, slaveID):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        slaveID = int(slaveID)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SlavePortErrCounterClear(slaveID)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置各轴速度前馈系数
+    @param [in] radio 各轴速度前馈系数
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetVelFeedForwardRatio(self, radio):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        radio = list(map(float,radio))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetVelFeedForwardRatio([radio[0],radio[1],radio[2],radio[3],radio[4],radio[5]])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取各轴速度前馈系数
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） radio 各轴速度前馈系数
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetVelFeedForwardRatio(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetVelFeedForwardRatio()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            return error, [float(_error[1]), float(_error[2]), float(_error[3]), float(_error[4]), float(_error[5]), float(_error[6])]
+        return error, None
+
+    """
+    @brief 机器人MCU日志生成
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def RobotMCULogCollect(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.RobotMCULogCollect()
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
