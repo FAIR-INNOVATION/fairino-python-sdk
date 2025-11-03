@@ -1659,22 +1659,29 @@ class RPC():
     @brief  关节扭矩控制
     @param  [in] 必选参数 torque j1~j6关节扭矩，单位Nm
     @param  [in] 必选参数 interval 指令周期，单位s，范围[0.001~0.008]
+    @param  [in] 默认参数 checkFlag 检测策略 0-不限制；1-限制功率；2-限制速度；3-功率和速度同时限制,默认0
+    @param  [in] 默认参数 jPowerLimit 关节最大功率限制(W)，默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 jVelLimit 关节最大速度(°/s)，默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ServoJT(self, torque, interval):
+    def ServoJT(self, torque, interval, checkFlag=0, jPowerLimit=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                jVelLimit=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         torque = list(map(float, torque))
         interval = float(interval)
+        checkFlag = int(checkFlag)
+        jPowerLimit = list(map(float, jPowerLimit))
+        jVelLimit = list(map(float, jVelLimit))
         flag = True
         while flag:
             try:
-                error = self.robot.ServoJT(torque, interval)
+                error = self.robot.ServoJT(torque, interval, checkFlag, jPowerLimit, jVelLimit)
                 flag = False
             except socket.error as e:
                 flag = True

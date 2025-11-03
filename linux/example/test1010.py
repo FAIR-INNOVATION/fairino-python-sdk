@@ -25,7 +25,8 @@ def testLasertrackMoveC(self):
         exaxisPos = [0.0] * 4
         offdese = [0.0] * 6
         directionPoint = [0.0] * 3
-        robot.MoveL(desc_pos=startdescPose,tool= 1,user= 0,vel= 50,acc= 100,ovl= 100,blendR= -1,exaxis_pos= exaxisPos,search= 0,offset_flag= 0,offset_pos= offdese,velAccParamMode= 1,overSpeedStrategy= 1)
+        rtn = robot.MoveL(desc_pos=startdescPose,tool= 1,user= 0,vel= 50,acc= 100,ovl= 100,blendR= -1,exaxis_pos= exaxisPos,search= 0,offset_flag= 0,offset_pos= offdese,velAccParamMode= 1,overSpeedStrategy= 1)
+        print(rtn)
         time.sleep(2)
         #沿着-y方向开始寻位
         ret = robot.LaserTrackingSearchStart_xyz(0, 100, 300, 1000, 2)

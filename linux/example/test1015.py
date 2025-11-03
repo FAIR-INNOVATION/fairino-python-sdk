@@ -16,7 +16,7 @@ def TestServoJ(self):
     filterT = 0.0
     gain = 0.0
     flag = 0
-    count = 500
+    count = 1000
     dt = 0.1
     cmdID = 0
     ret, j = robot.GetActualJointPosDegree(flag)
@@ -25,7 +25,7 @@ def TestServoJ(self):
         robot.ServoMoveStart()
         while count:
             robot.ServoJ(joint_pos=j,axisPos= epos,acc= acc,vel= vel, cmdT=cmdT, filterT=filterT, gain=gain, id=cmdID)
-            j[4] += dt
+            j[0] -= dt
             count -= 1
             time.sleep(cmdT)
             rtn,pkg = robot.GetRobotRealTimeState()
@@ -165,11 +165,11 @@ def TestFTControlWithDamping(self):
     robot.CloseRPC()
     return 0
 
-# TestServoJ(robot)
+TestServoJ(robot)
 # TestSlavePortErr(robot)
 # TestVelFeedForwardRatio(robot)
 # TestSpiral(robot)
-TestFTControlWithDamping(robot)
+# TestFTControlWithDamping(robot)
 
 
 
