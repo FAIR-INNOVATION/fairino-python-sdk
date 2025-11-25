@@ -35,4 +35,12 @@ def ServoJTWithSafety(self):
     error = robot.ServoJTEnd()
     return 0
 
-ServoJTWithSafety(robot)
+def test(self):
+    robot.Mode(0)
+    time.sleep(1)
+    rtn,state = robot.GetRobotRealTimeState()
+    print(state.robot_mode)
+
+
+# ServoJTWithSafety(robot)
+# test(robot)

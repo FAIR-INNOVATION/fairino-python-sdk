@@ -880,7 +880,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.1.7", "Robot:V3.8.7"]
+        sdk = ["SDK:V2.2.0", "Robot:V3.9.0"]
         return error, sdk
 
     """   
@@ -13925,6 +13925,7 @@ class RPC():
     @brief 获取关节扭矩传感器灵敏度标定结果
     @return 错误码 成功- 0, 失败-错误码
     @return 返回值（调用成功返回） calibResult j1~j6关节灵敏度[0-1]
+    @return 返回值（调用成功返回） linearityn j1~j6关节线性度[0-1]
     """
 
     @log_call
@@ -13941,8 +13942,8 @@ class RPC():
                 flag = True
         error = _error[0]
         if error == 0:
-            return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
-        return error, None
+            return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]], [_error[7], _error[8], _error[9], _error[10], _error[11], _error[12]]
+        return error, None, None
 
     """
     @brief 关节扭矩传感器灵敏度数据采集
@@ -14111,3 +14112,293 @@ class RPC():
                 flag = True
         return error
 
+    """3.9.0"""
+    """2025.11.03"""
+    """
+    @brief 移动到相贯线起始点
+    @param  [in] 必选参数 mainPoint 主管6个示教点的笛卡尔位姿
+    @param  [in] 必选参数 piecePoint 辅管6个示教点的笛卡尔位姿
+    @param  [in] 必选参数 tool 工具坐标系编号
+    @param  [in] 必选参数 wobj 工件坐标系编号
+    @param  [in] 必选参数 vel 速度百分比
+    @param  [in] 必选参数 acc 加速度百分比 
+    @param  [in] 必选参数 ovl 速度缩放因子
+    @param  [in] 必选参数 oacc 加速度缩放因子
+    @param  [in] 必选参数 moveType 运动类型; 0-PTP；1-LIN
+    @param  [in] 默认参数 mainExaxisPos 主管6个示教点扩展轴位置,默认[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]]
+    @param  [in] 默认参数 pieceExaxisPos 拼接管6个示教点扩展轴位置,默认[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]]
+    @param  [in] 默认参数 extAxisFlag 是否启用扩展轴；0-不启用；1-启用
+    @param  [in] 默认参数 exaxisPos 起点扩展轴位置[0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 moveDirection 运动方向；0-顺时针；1-逆时针
+    @param  [in] 默认参数 offset 偏移量
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def MoveToIntersectLineStart(self, mainPoint, piecePoint, tool, wobj, vel, acc, ovl, oacc, moveType,mainExaxisPos=[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]],
+                                 pieceExaxisPos=[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]],extAxisFlag=0,
+                                 exaxisPos=[0.0,0.0,0.0,0.0],moveDirection=0,offset=[0.0,0.0,0.0,0.0,0.0,0.0]):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        mainPoint0 = list(map(float, mainPoint[0]))
+        mainPoint1 = list(map(float, mainPoint[1]))
+        mainPoint2 = list(map(float, mainPoint[2]))
+        mainPoint3 = list(map(float, mainPoint[3]))
+        mainPoint4 = list(map(float, mainPoint[4]))
+        mainPoint5 = list(map(float, mainPoint[5]))
+        mainExaxisPos0 = list(map(float, mainExaxisPos[0]))
+        mainExaxisPos1 = list(map(float, mainExaxisPos[1]))
+        mainExaxisPos2 = list(map(float, mainExaxisPos[2]))
+        mainExaxisPos3 = list(map(float, mainExaxisPos[3]))
+        mainExaxisPos4 = list(map(float, mainExaxisPos[4]))
+        mainExaxisPos5 = list(map(float, mainExaxisPos[5]))
+        piecePoint0 = list(map(float, piecePoint[0]))
+        piecePoint1 = list(map(float, piecePoint[1]))
+        piecePoint2 = list(map(float, piecePoint[2]))
+        piecePoint3 = list(map(float, piecePoint[3]))
+        piecePoint4 = list(map(float, piecePoint[4]))
+        piecePoint5 = list(map(float, piecePoint[5]))
+        pieceExaxisPos0 = list(map(float, pieceExaxisPos[0]))
+        pieceExaxisPos1 = list(map(float, pieceExaxisPos[1]))
+        pieceExaxisPos2 = list(map(float, pieceExaxisPos[2]))
+        pieceExaxisPos3 = list(map(float, pieceExaxisPos[3]))
+        pieceExaxisPos4 = list(map(float, pieceExaxisPos[4]))
+        pieceExaxisPos5 = list(map(float, pieceExaxisPos[5]))
+        extAxisFlag = int(extAxisFlag)
+        exaxisPos = list(map(float, exaxisPos))
+
+        tool = int(tool)
+        wobj = int(wobj)
+        vel = float(vel)
+        acc = float(acc)
+        ovl = float(ovl)
+        oacc = float(oacc)
+        moveType = int(moveType)
+        moveDirection = int(moveDirection)
+        offset = list(map(float, offset))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.MoveToIntersectLineStart([mainPoint0[0], mainPoint0[1], mainPoint0[2], mainPoint0[3], mainPoint0[4], mainPoint0[5],
+                                                             mainPoint1[0], mainPoint1[1], mainPoint1[2], mainPoint1[3], mainPoint1[4], mainPoint1[5],
+                                                             mainPoint2[0], mainPoint2[1], mainPoint2[2], mainPoint2[3], mainPoint2[4], mainPoint2[5],
+                                                             mainPoint3[0], mainPoint3[1], mainPoint3[2], mainPoint3[3], mainPoint3[4], mainPoint3[5],
+                                                             mainPoint4[0], mainPoint4[1], mainPoint4[2], mainPoint4[3], mainPoint4[4], mainPoint4[5],
+                                                             mainPoint5[0], mainPoint5[1], mainPoint5[2], mainPoint5[3], mainPoint5[4], mainPoint5[5],
+                                                             mainExaxisPos0[0], mainExaxisPos0[1], mainExaxisPos0[2], mainExaxisPos0[3],
+                                                             mainExaxisPos1[0], mainExaxisPos1[1], mainExaxisPos1[2], mainExaxisPos1[3],
+                                                             mainExaxisPos2[0], mainExaxisPos2[1], mainExaxisPos2[2], mainExaxisPos2[3],
+                                                             mainExaxisPos3[0], mainExaxisPos3[1], mainExaxisPos3[2], mainExaxisPos3[3],
+                                                             mainExaxisPos4[0], mainExaxisPos4[1], mainExaxisPos4[2], mainExaxisPos4[3],
+                                                             mainExaxisPos5[0], mainExaxisPos5[1], mainExaxisPos5[2], mainExaxisPos5[3],
+                                                             piecePoint0[0],piecePoint0[1],piecePoint0[2],piecePoint0[3],piecePoint0[4],piecePoint0[5],
+                                                             piecePoint1[0],piecePoint1[1],piecePoint1[2],piecePoint1[3],piecePoint1[4],piecePoint1[5],
+                                                             piecePoint2[0],piecePoint2[1],piecePoint2[2],piecePoint2[3],piecePoint2[4],piecePoint2[5],
+                                                             piecePoint3[0],piecePoint3[1],piecePoint3[2],piecePoint3[3],piecePoint3[4],piecePoint3[5],
+                                                             piecePoint4[0],piecePoint4[1],piecePoint4[2],piecePoint4[3],piecePoint4[4],piecePoint4[5],
+                                                             piecePoint5[0],piecePoint5[1],piecePoint5[2],piecePoint5[3],piecePoint5[4],piecePoint5[5],
+                                                             pieceExaxisPos0[0], pieceExaxisPos0[1], pieceExaxisPos0[2], pieceExaxisPos0[3],
+                                                             pieceExaxisPos1[0], pieceExaxisPos1[1], pieceExaxisPos1[2], pieceExaxisPos1[3],
+                                                             pieceExaxisPos2[0], pieceExaxisPos2[1], pieceExaxisPos2[2], pieceExaxisPos2[3],
+                                                             pieceExaxisPos3[0], pieceExaxisPos3[1], pieceExaxisPos3[2], pieceExaxisPos3[3],
+                                                             pieceExaxisPos4[0], pieceExaxisPos4[1], pieceExaxisPos4[2], pieceExaxisPos4[3],
+                                                             pieceExaxisPos5[0], pieceExaxisPos5[1], pieceExaxisPos5[2], pieceExaxisPos5[3],
+                                                             extAxisFlag,
+                                                             exaxisPos[0], exaxisPos[1], exaxisPos[2], exaxisPos[3],
+                                                             tool, wobj, vel, acc, ovl, oacc, moveType,moveDirection,
+                                                             offset[0],offset[1],offset[2],offset[3],offset[4],offset[5]])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 相贯线运动
+    @param  [in] 必选参数 mainPoint 主管6个示教点的笛卡尔位姿
+    @param  [in] 必选参数 piecePoint 辅管6个示教点的笛卡尔位姿
+    @param  [in] 必选参数 tool 工具坐标系编号
+    @param  [in] 默认参数 wobj 工件坐标系编号
+    @param  [in] 默认参数 vel 速度百分比
+    @param  [in] 默认参数 acc 加速度百分比 
+    @param  [in] 默认参数 ovl 速度缩放因子
+    @param  [in] 默认参数 oacc 加速度缩放因子
+    @param  [in] 默认参数 moveDirection 运动方向; 0-顺时针；1-逆时针
+    @param  [in] 默认参数 mainExaxisPos 主管6个示教点扩展轴位置,默认[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]]
+    @param  [in] 默认参数 pieceExaxisPos 拼接管6个示教点扩展轴位置,默认[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]]
+    @param  [in] 默认参数 extAxisFlag 是否启用扩展轴；0-不启用；1-启用
+    @param  [in] 默认参数 exaxisPos 起点扩展轴位置[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]]
+    @param  [in] 默认参数 offset 偏移量
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+
+    @log_call
+    @xmlrpc_timeout
+    def MoveIntersectLine(self, mainPoint, piecePoint, tool, wobj, vel, acc, ovl, oacc, moveDirection,mainExaxisPos=[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]],
+                                 pieceExaxisPos=[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]],extAxisFlag=0,
+                                 exaxisPos=[[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0],[0.0,0.0,0.0,0.0]],offset=[0.0,0.0,0.0,0.0,0.0,0.0]):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        mainPoint0 = list(map(float, mainPoint[0]))
+        mainPoint1 = list(map(float, mainPoint[1]))
+        mainPoint2 = list(map(float, mainPoint[2]))
+        mainPoint3 = list(map(float, mainPoint[3]))
+        mainPoint4 = list(map(float, mainPoint[4]))
+        mainPoint5 = list(map(float, mainPoint[5]))
+        mainExaxisPos0 = list(map(float, mainExaxisPos[0]))
+        mainExaxisPos1 = list(map(float, mainExaxisPos[1]))
+        mainExaxisPos2 = list(map(float, mainExaxisPos[2]))
+        mainExaxisPos3 = list(map(float, mainExaxisPos[3]))
+        mainExaxisPos4 = list(map(float, mainExaxisPos[4]))
+        mainExaxisPos5 = list(map(float, mainExaxisPos[5]))
+        piecePoint0 = list(map(float, piecePoint[0]))
+        piecePoint1 = list(map(float, piecePoint[1]))
+        piecePoint2 = list(map(float, piecePoint[2]))
+        piecePoint3 = list(map(float, piecePoint[3]))
+        piecePoint4 = list(map(float, piecePoint[4]))
+        piecePoint5 = list(map(float, piecePoint[5]))
+        pieceExaxisPos0 = list(map(float, pieceExaxisPos[0]))
+        pieceExaxisPos1 = list(map(float, pieceExaxisPos[1]))
+        pieceExaxisPos2 = list(map(float, pieceExaxisPos[2]))
+        pieceExaxisPos3 = list(map(float, pieceExaxisPos[3]))
+        pieceExaxisPos4 = list(map(float, pieceExaxisPos[4]))
+        pieceExaxisPos5 = list(map(float, pieceExaxisPos[5]))
+        extAxisFlag = int(extAxisFlag)
+        exaxisPos0 = list(map(float, exaxisPos[0]))
+        exaxisPos1 = list(map(float, exaxisPos[1]))
+        exaxisPos2 = list(map(float, exaxisPos[2]))
+        exaxisPos3 = list(map(float, exaxisPos[3]))
+        tool = int(tool)
+        wobj = int(wobj)
+        vel = float(vel)
+        acc = float(acc)
+        ovl = float(ovl)
+        oacc = float(oacc)
+        moveDirection = int(moveDirection)
+        offset = list(map(float, offset))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.MoveIntersectLine(
+                    [mainPoint0[0], mainPoint0[1], mainPoint0[2], mainPoint0[3], mainPoint0[4], mainPoint0[5],
+                                                             mainPoint1[0], mainPoint1[1], mainPoint1[2], mainPoint1[3], mainPoint1[4], mainPoint1[5],
+                                                             mainPoint2[0], mainPoint2[1], mainPoint2[2], mainPoint2[3], mainPoint2[4], mainPoint2[5],
+                                                             mainPoint3[0], mainPoint3[1], mainPoint3[2], mainPoint3[3], mainPoint3[4], mainPoint3[5],
+                                                             mainPoint4[0], mainPoint4[1], mainPoint4[2], mainPoint4[3], mainPoint4[4], mainPoint4[5],
+                                                             mainPoint5[0], mainPoint5[1], mainPoint5[2], mainPoint5[3], mainPoint5[4], mainPoint5[5],
+                                                             mainExaxisPos0[0], mainExaxisPos0[1], mainExaxisPos0[2], mainExaxisPos0[3],
+                                                             mainExaxisPos1[0], mainExaxisPos1[1], mainExaxisPos1[2], mainExaxisPos1[3],
+                                                             mainExaxisPos2[0], mainExaxisPos2[1], mainExaxisPos2[2], mainExaxisPos2[3],
+                                                             mainExaxisPos3[0], mainExaxisPos3[1], mainExaxisPos3[2], mainExaxisPos3[3],
+                                                             mainExaxisPos4[0], mainExaxisPos4[1], mainExaxisPos4[2], mainExaxisPos4[3],
+                                                             mainExaxisPos5[0], mainExaxisPos5[1], mainExaxisPos5[2], mainExaxisPos5[3],
+                                                             piecePoint0[0],piecePoint0[1],piecePoint0[2],piecePoint0[3],piecePoint0[4],piecePoint0[5],
+                                                             piecePoint1[0],piecePoint1[1],piecePoint1[2],piecePoint1[3],piecePoint1[4],piecePoint1[5],
+                                                             piecePoint2[0],piecePoint2[1],piecePoint2[2],piecePoint2[3],piecePoint2[4],piecePoint2[5],
+                                                             piecePoint3[0],piecePoint3[1],piecePoint3[2],piecePoint3[3],piecePoint3[4],piecePoint3[5],
+                                                             piecePoint4[0],piecePoint4[1],piecePoint4[2],piecePoint4[3],piecePoint4[4],piecePoint4[5],
+                                                             piecePoint5[0],piecePoint5[1],piecePoint5[2],piecePoint5[3],piecePoint5[4],piecePoint5[5],
+                                                             pieceExaxisPos0[0], pieceExaxisPos0[1], pieceExaxisPos0[2], pieceExaxisPos0[3],
+                                                             pieceExaxisPos1[0], pieceExaxisPos1[1], pieceExaxisPos1[2], pieceExaxisPos1[3],
+                                                             pieceExaxisPos2[0], pieceExaxisPos2[1], pieceExaxisPos2[2], pieceExaxisPos2[3],
+                                                             pieceExaxisPos3[0], pieceExaxisPos3[1], pieceExaxisPos3[2], pieceExaxisPos3[3],
+                                                             pieceExaxisPos4[0], pieceExaxisPos4[1], pieceExaxisPos4[2], pieceExaxisPos4[3],
+                                                             pieceExaxisPos5[0], pieceExaxisPos5[1], pieceExaxisPos5[2], pieceExaxisPos5[3],
+                                                             extAxisFlag,
+                                                             exaxisPos0[0], exaxisPos0[1], exaxisPos0[2], exaxisPos0[3],
+                                                             exaxisPos1[0], exaxisPos1[1], exaxisPos1[2], exaxisPos1[3],
+                                                             exaxisPos2[0], exaxisPos2[1], exaxisPos2[2], exaxisPos2[3],
+                                                             exaxisPos3[0], exaxisPos3[1], exaxisPos3[2], exaxisPos3[3],
+                     tool, wobj, vel, acc, ovl, oacc, moveDirection,
+                                                             offset[0],offset[1],offset[2],offset[3],offset[4],offset[5]])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """3.9.0"""
+    """2025.11.20"""
+    """
+    @brief 获取关节扭矩传感器迟滞误差
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） hysteresisError j1~j6关节迟滞误差
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointHysteresisError(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.JointHysteresisError()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            return error, [float(_error[1]), float(_error[2]), float(_error[3]), float(_error[4]), float(_error[5]), float(_error[6])]
+        return error, None
+
+
+    """
+    @brief 获取关节扭矩传感器重复精度
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） repeatability j1~j6关节重复精度
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def JointRepeatability(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.JointRepeatability()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            return error, [float(_error[1]), float(_error[2]), float(_error[3]), float(_error[4]), float(_error[5]), float(_error[6])]
+        return error, None
+
+    """
+    @brief 设置关节力传感器参数
+    @param  [in] 必选参数 M J1-J6质量系数[]
+    @param  [in] 必选参数 B J1-J6阻尼系数[]
+    @param  [in] 必选参数 K J1-J6刚度系数[]
+    @param  [in] 默认参数 threshold 力控制阈值，Nm
+    @param  [in] 默认参数 sensitivity 灵敏度,Nm/V,[]
+    @param  [in] 默认参数 setZeroFlag 功能开启标志位；0-关闭；1-开启；2-位置1记录零点；3-位置2记录零点
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetAdmittanceParams(self, M, B, K, threshold, sensitivity, setZeroFlag):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        M = list(map(float, M))
+        B = list(map(float, B))
+        K = list(map(float, K))
+        threshold = list(map(float, threshold))
+        sensitivity = list(map(float, sensitivity))
+        setZeroFlag = int(setZeroFlag)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetAdmittanceParams(
+                    [M[0], M[1], M[2], M[3], M[4], M[5],
+                     B[0], B[1], B[2], B[3], B[4], B[5],
+                     K[0], K[1], K[2], K[3], K[4], K[5],
+                     threshold[0], threshold[1], threshold[2], threshold[3], threshold[4], threshold[5],
+                     sensitivity[0], sensitivity[1], sensitivity[2], sensitivity[3], sensitivity[4], sensitivity[5],
+                     setZeroFlag])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
