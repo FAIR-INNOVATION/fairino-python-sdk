@@ -880,7 +880,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.2.0", "Robot:V3.9.0"]
+        sdk = ["SDK:V2.2.1", "Robot:V3.9.1"]
         return error, sdk
 
     """   
@@ -1145,6 +1145,7 @@ class RPC():
     @param  [in] 默认参数 search:[0]-不焊丝寻位，[1]-焊丝寻位
     @param  [in] 默认参数 offset_flag:[0]-不偏移，[1]-工件/基坐标系下偏移，[2]-工具坐标系下偏移 默认 0
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 oacc 加速度缩放因子[0-100]/物理加速度(mm/s2) 默认 100
     @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
     @param  [in] 默认参数 overSpeedStrategy  超速处理策略，0-策略关闭；1-标准；2-超速时报错停止；3-自适应降速，默认为0
@@ -1156,7 +1157,7 @@ class RPC():
     @xmlrpc_timeout
     def MoveL(self, desc_pos, tool, user, joint_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], vel=20.0, acc=0.0, ovl=100.0,
               blendR=-1.0, blendMode = 0,exaxis_pos=[0.0, 0.0, 0.0, 0.0], search=0, offset_flag=0,
-              offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],config=-1,velAccParamMode=0,overSpeedStrategy=0,speedPercent=10):
+              offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],oacc = 100.0,config=-1,velAccParamMode=0,overSpeedStrategy=0,speedPercent=10):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -1174,6 +1175,7 @@ class RPC():
         search = int(search)
         offset_flag = int(offset_flag)
         offset_pos = list(map(float, offset_pos))
+        oacc = float(oacc)
         config = int(config)
         velAccParamMode = int(velAccParamMode)
         overSpeedStrategy = int(overSpeedStrategy)
@@ -1194,7 +1196,7 @@ class RPC():
         flag = True
         while flag:
             try:
-                error1 = self.robot.MoveL([joint_pos[0],joint_pos[1],joint_pos[2],joint_pos[3],joint_pos[4],joint_pos[5], desc_pos[0],desc_pos[1],desc_pos[2],desc_pos[3],desc_pos[4],desc_pos[5], tool, user, vel, acc, ovl, blendR, blendMode, exaxis_pos[0],exaxis_pos[1],exaxis_pos[2],exaxis_pos[3], search,offset_flag, offset_pos[0],offset_pos[1],offset_pos[2],offset_pos[3],offset_pos[4],offset_pos[5],100.0,velAccParamMode])
+                error1 = self.robot.MoveL([joint_pos[0],joint_pos[1],joint_pos[2],joint_pos[3],joint_pos[4],joint_pos[5], desc_pos[0],desc_pos[1],desc_pos[2],desc_pos[3],desc_pos[4],desc_pos[5], tool, user, vel, acc, ovl, blendR, blendMode, exaxis_pos[0],exaxis_pos[1],exaxis_pos[2],exaxis_pos[3], search,offset_flag, offset_pos[0],offset_pos[1],offset_pos[2],offset_pos[3],offset_pos[4],offset_pos[5],oacc,velAccParamMode])
                 flag = False
             except socket.error as e:
                 flag = True
@@ -1228,6 +1230,7 @@ class RPC():
     @param  [in] 默认参数 offset_pos_t: 目标点位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认100.0
     @param  [in] 默认参数 blendR:[-1.0]-运动到位 (阻塞)，[0~1000]-平滑半径 (非阻塞)，单位 [mm] 默认-1.0
+    @param  [in] 默认参数 oacc 加速度缩放因子[0-100]/物理加速度(mm/s2) 默认 100
     @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
     @return 错误码 成功-0  失败-错误码
@@ -1241,7 +1244,7 @@ class RPC():
               offset_pos_p=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
               vel_t=20.0, acc_t=100.0, exaxis_pos_t=[0.0, 0.0, 0.0, 0.0], offset_flag_t=0,
               offset_pos_t=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-              ovl=100.0, blendR=-1.0,config=-1,velAccParamMode=0):
+              ovl=100.0, blendR=-1.0,oacc=100.0,config=-1,velAccParamMode=0):
         while self.reconnect_flag:
             time.sleep(0.1)
         if self.GetSafetyCode() != 0:
@@ -1268,6 +1271,7 @@ class RPC():
 
         ovl = float(ovl)
         blendR = float(blendR)
+        oacc = float(oacc)
         config = int(config)
         velAccParamMode = int(velAccParamMode)
 
@@ -1293,7 +1297,7 @@ class RPC():
             try:
                 error = self.robot.MoveC([joint_pos_p[0],joint_pos_p[1],joint_pos_p[2],joint_pos_p[3],joint_pos_p[4],joint_pos_p[5], desc_pos_p[0],desc_pos_p[1],desc_pos_p[2],desc_pos_p[3],desc_pos_p[4],desc_pos_p[5], tool_p, user_p, vel_p, acc_p, exaxis_pos_p[0],exaxis_pos_p[1],exaxis_pos_p[2],exaxis_pos_p[3], offset_flag_p,
                                          offset_pos_p[0],offset_pos_p[1],offset_pos_p[2],offset_pos_p[3],offset_pos_p[4],offset_pos_p[5], joint_pos_t[0],joint_pos_t[1],joint_pos_t[2],joint_pos_t[3],joint_pos_t[4],joint_pos_t[5], desc_pos_t[0],desc_pos_t[1],desc_pos_t[2],desc_pos_t[3],desc_pos_t[4],desc_pos_t[5], tool_t, user_t, vel_t, acc_t, exaxis_pos_t[0],exaxis_pos_t[1],exaxis_pos_t[2],exaxis_pos_t[3],
-                                         offset_flag_t, offset_pos_t[0],offset_pos_t[1],offset_pos_t[2],offset_pos_t[3],offset_pos_t[4],offset_pos_t[5], ovl, blendR,100.0,velAccParamMode])
+                                         offset_flag_t, offset_pos_t[0],offset_pos_t[1],offset_pos_t[2],offset_pos_t[3],offset_pos_t[4],offset_pos_t[5], ovl, blendR,oacc,velAccParamMode])
                 flag = False
             except socket.error as e:
                 flag = True
@@ -1318,7 +1322,7 @@ class RPC():
     @param  [in] 默认参数 ovl: 速度缩放因子，[0~100] 默认100.0
     @param  [in] 默认参数 offset_flag: 是否偏移[0]-不偏移，[1]-工件/基坐标系下偏移，[2]-工具坐标系下偏移 默认 0
     @param  [in] 默认参数 offset_pos: 位姿偏移量，单位 [mm][°] 默认[0.0,0.0,0.0,0.0,0.0,0.0]
-    @param  [in] 默认参数 oacc: 加速度百分比，默认：100
+    @param  [in] 默认参数 oacc: 加速度缩放因子[0-100]/物理加速度(mm/s2)，默认：100
     @param  [in] 默认参数 blendR: -1：阻塞；0~1000：平滑半径 默认：-1
     @param  [in] 默认参数 config 逆解关节空间配置，[-1]-参考当前关节位置解算，[0~7]-依据特定关节空间配置求解，默认-1
     @param  [in] 默认参数 velAccParamMode 速度加速度参数模式；0-百分比；1-物理速度(mm/s)加速度(mm/s2) 默认0
@@ -5472,6 +5476,8 @@ class RPC():
     @param  [in] 必选参数 max_ang：最大调整角度，单位deg
     @param  [in] 必选参数 M 质量参数
     @param  [in] 必选参数 B 阻尼参数
+    @param  [in] 默认参数 threshold rx、ry启动阈值[0-10],默认0.2
+    @param  [in] 默认参数 adjustCoeff rx、ry力矩调节系数[0-1],默认1
     @param  [in] 默认参数 polishRadio：打磨盘半径，单位mm
     @param  [in] 默认参数 filter_Sign 滤波开启标志 0-关；1-开，默认 0-关闭
     @param  [in] 默认参数 posAdapt_sign 姿态顺应开启标志 0-关；1-开，默认 0-关闭
@@ -5481,7 +5487,7 @@ class RPC():
 
     @log_call
     @xmlrpc_timeout
-    def FT_Control(self, flag, sensor_id, select, ft, ft_pid, adj_sign, ILC_sign, max_dis, max_ang, M=None, B=None, polishRadio=0, filter_Sign=0, posAdapt_sign=0, isNoBlock=0):
+    def FT_Control(self, flag, sensor_id, select, ft, ft_pid, adj_sign, ILC_sign, max_dis, max_ang, M=None, B=None, threshold=[0.2,0.2], adjustCoeff=[1.0,1.0], polishRadio=0, filter_Sign=0, posAdapt_sign=0, isNoBlock=0):
         if M is None:
             M = [0, 0]
         if B is None:
@@ -5501,6 +5507,8 @@ class RPC():
 
         M = list(map(float, M))
         B = list(map(float, B))
+        threshold = list(map(float, threshold))
+        adjustCoeff = list(map(float, adjustCoeff))
         polishRadio = float(polishRadio)
         filter_Sign = int(filter_Sign)
         posAdapt_sign = int(posAdapt_sign)
@@ -5509,7 +5517,7 @@ class RPC():
         while flag_tmp:
             try:
                 error = self.robot.FT_Control(flag, sensor_id, select, ft, ft_pid, adj_sign, ILC_sign, max_dis,
-                                              max_ang,polishRadio, filter_Sign, posAdapt_sign,[M[0],M[1],B[0],B[0]],isNoBlock)
+                                              max_ang,polishRadio, filter_Sign, posAdapt_sign,[M[0],M[1],B[0],B[0],threshold[0],threshold[1],adjustCoeff[0],adjustCoeff[1]],isNoBlock)
                 flag_tmp = False
             except socket.error as e:
                 flag_tmp = True
@@ -14398,6 +14406,31 @@ class RPC():
                      threshold[0], threshold[1], threshold[2], threshold[3], threshold[4], threshold[5],
                      sensitivity[0], sensitivity[1], sensitivity[2], sensitivity[3], sensitivity[4], sensitivity[5],
                      setZeroFlag])
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """3.9.1"""
+    """2025.12.01"""
+    """
+    @brief 开启力矩补偿功能及补偿系数
+    @param  [in] 必选参数 status 开关，0-关闭；1-开启
+    @param  [in] 必选参数 torqueCoeff J1-J6力矩补偿系数[0-1]
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SerCoderCompenParams(self, status, torqueCoeff):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        status = int(status)
+        torqueCoeff = list(map(float, torqueCoeff))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SerCoderCompenParams([status,torqueCoeff[0],torqueCoeff[1],torqueCoeff[2],torqueCoeff[3],torqueCoeff[4],torqueCoeff[5]])
                 flag = False
             except socket.error as e:
                 flag = True
