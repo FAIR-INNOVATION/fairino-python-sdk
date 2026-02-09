@@ -880,7 +880,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.2.2", "Robot:V3.9.2"]
+        sdk = ["SDK:V2.2.3", "Robot:V3.9.3"]
         return error, sdk
 
     """   
@@ -1604,6 +1604,7 @@ class RPC():
     @brief  笛卡尔空间伺服模式运动
     @param  [in] 必选参数 mode:[0]-绝对运动 (基坐标系)，[1]-增量运动 (基坐标系)，[2]-增量运动(工具坐标系)
     @param  [in] 必选参数 desc_pos: 目标笛卡尔位置/目标笛卡尔位置增量
+    @param  [in] 必选参数 exaxis 扩展轴位置
     @param  [in] 默认参数 pos_gain: 位姿增量比例系数，仅在增量运动下生效，范围 [0~1], 默认为 [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     @param  [in] 默认参数 acc: 加速度，范围 [0~100]，暂不开放，默认为 0.0
     @param  [in] 默认参数 vel: 速度，范围 [0~100]，暂不开放，默认为 0.0
@@ -1615,7 +1616,7 @@ class RPC():
 
     @log_call
     @xmlrpc_timeout
-    def ServoCart(self, mode, desc_pos, pos_gain=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0], acc=0.0, vel=0.0, cmdT=0.008,
+    def ServoCart(self, mode, desc_pos, exaxis, pos_gain=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0], acc=0.0, vel=0.0, cmdT=0.008,
                   filterT=0.0, gain=0.0):
         while self.reconnect_flag:
             time.sleep(0.1)
@@ -1623,6 +1624,7 @@ class RPC():
             return self.GetSafetyCode()
         mode = int(mode)
         desc_pos = list(map(float, desc_pos))
+        exaxis = list(map(float, exaxis))
         pos_gain = list(map(float, pos_gain))
         acc = float(acc)
         vel = float(vel)
@@ -1632,7 +1634,7 @@ class RPC():
         flag = True
         while flag:
             try:
-                error = self.robot.ServoCart(mode, desc_pos, pos_gain, acc, vel, cmdT, filterT, gain)
+                error = self.robot.ServoCart(mode, desc_pos, pos_gain, exaxis, acc, vel, cmdT, filterT, gain)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9451,19 +9453,21 @@ class RPC():
     """   
     @brief  设置控制箱DO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetCtlBoxDO(self,resetFlag):
+    def SetOutputResetCtlBoxDO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetCtlBoxDO(resetFlag)
+                error = self.robot.SetOutputResetCtlBoxDO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9473,19 +9477,21 @@ class RPC():
     """   
     @brief  设置控制箱AO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetCtlBoxAO(self,resetFlag):
+    def SetOutputResetCtlBoxAO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetCtlBoxAO(resetFlag)
+                error = self.robot.SetOutputResetCtlBoxAO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9495,19 +9501,21 @@ class RPC():
     """   
     @brief  设置末端工具DO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetAxleDO(self,resetFlag):
+    def SetOutputResetAxleDO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetAxleDO(resetFlag)
+                error = self.robot.SetOutputResetAxleDO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9517,19 +9525,21 @@ class RPC():
     """   
     @brief  设置末端工具AO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetAxleAO(self,resetFlag):
+    def SetOutputResetAxleAO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetAxleAO(resetFlag)
+                error = self.robot.SetOutputResetAxleAO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9539,19 +9549,21 @@ class RPC():
     """   
     @brief  设置扩展DO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetExtDO(self,resetFlag):
+    def SetOutputResetExtDO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetExtDO(resetFlag)
+                error = self.robot.SetOutputResetExtDO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9561,19 +9573,21 @@ class RPC():
     """   
     @brief  设置扩展AO停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetExtAO(self,resetFlag):
+    def SetOutputResetExtAO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetExtAO(resetFlag)
+                error = self.robot.SetOutputResetExtAO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -9583,19 +9597,21 @@ class RPC():
     """   
     @brief  设置SmartTool停止/暂停后输出是否复位
     @param  [in]必选参数 resetFlag  0-不复位；1-复位
+    @param  [in]必选参数 reloadFlag 暂停恢复后是否重加载，0-不加载；1-加载
     @return 错误码 成功- 0, 失败-错误码    
     """
 
     @log_call
     @xmlrpc_timeout
-    def SetOutputResetSmartToolDO(self,resetFlag):
+    def SetOutputResetSmartToolDO(self,resetFlag,reloadFlag):
         while self.reconnect_flag:
             time.sleep(0.1)
         resetFlag = int(resetFlag)
+        reloadFlag = int(reloadFlag)
         flag = True
         while flag:
             try:
-                error = self.robot.SetOutputResetSmartToolDO(resetFlag)
+                error = self.robot.SetOutputResetSmartToolDO(resetFlag,reloadFlag)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -14662,3 +14678,42 @@ class RPC():
             except socket.error as e:
                 flag = True
         return error
+
+    """3.9.3"""
+    """2026.01.29"""
+    """
+    @brief 逆运动学求解，笛卡尔空间包含扩展轴位置
+    @param  [in] 必选参数 type 0-绝对位姿(基坐标系)，1-增量位姿(基坐标系)，2-增量位姿(工具坐标系)
+    @param  [in] 必选参数 desc_pos 笛卡尔位姿
+    @param  [in] 必选参数 exaxis 扩展轴位置
+    @param  [in] 必选参数 tool 工具号
+    @param  [in] 必选参数 workPiece 工件号
+    @return 错误码 成功- 0, 失败-错误码
+    @return 返回值（调用成功返回） joint_pos 关节位置
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetInverseKinExaxis(self, type, desc_pos, exaxis, tool, workPiece):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        type = int(type)
+        desc_pos = list(map(float, desc_pos))
+        exaxis = list(map(float, exaxis))
+        tool = int(tool)
+        workPiece = int(workPiece)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetInverseKinExaxis(type,
+                                                        [desc_pos[0],desc_pos[1],desc_pos[2],
+                                                         desc_pos[3],desc_pos[4],desc_pos[5]],
+                                                        [exaxis[0],exaxis[1],exaxis[2],exaxis[3]],
+                                                        tool,workPiece)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            return error, [float(_error[1]), float(_error[2]), float(_error[3]),float(_error[4]), float(_error[5]), float(_error[6])]
+        return error, None
