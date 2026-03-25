@@ -13,7 +13,9 @@ import struct
 import sys
 import ctypes
 from ctypes import *
-
+from typing import Optional
+from typing import Callable, Optional, List, Tuple
+from dataclasses import dataclass
 # from Cython.Compiler.Options import error_on_unknown_names
 
 is_init =False
@@ -192,7 +194,7 @@ def calculate_file_md5(file_path):
 def xmlrpc_timeout(func):
     @wraps(func)
     def wrapper(self, *args, **kwargs):
-        if RPC.is_conect == False:
+        if RPC.is_connect == False:
             return -4
         else:
             result = func(self, *args, **kwargs)
@@ -221,6 +223,391 @@ class RobotError:
     ERR_DOWN_LOAD_FILE_FAILED=-8     #/* 文件下载失败 */
     ERR_UPLOAD_FILE_NOT_FOUND=-7     #/* 上传文件存在 */
     ERR_SAVE_FILE_PATH_NOT_FOUND=-6     #/* 保存文件路径不存在 */
+    ERR_PARAM_VALUE=4                 #/* 参数值不在合理范围内 */
+
+@dataclass
+class UdpFrame:
+    """UDP帧数据结构"""
+    head: str = "/f/b"
+    tail: str = "/b/f"
+    count: int = 0
+    cmd_id: int = 0
+    content_len: int = 0
+    content: str = ""
+
+# 定义回调函数类型
+UdpFrameCallback = Callable[[int, int, int, int, str], int]
+
+def split_frame(data: str) -> List[str]:
+    """
+    从数据流中分割出完整的帧
+
+    Args:
+        data: 原始数据流（字符串）
+
+    Returns:
+        List[str]: 完整的帧列表
+    """
+    result = []
+    pos = 0
+
+    while pos < len(data):
+        start = data.find("/f/b", pos)
+        if start == -1:
+            break
+
+        end = data.find("/b/f", start)
+        if end == -1:
+            break
+
+        # 提取完整帧
+        result.append(data[start:end + 4])
+        pos = end + 4
+
+    return result
+
+
+def unpack_frame(frame_str: str) -> UdpFrame:
+    """
+    解析帧字符串为UdpFrame结构
+    格式: /f/bIII{count}III{cmd_id}III{content_len}III{content}III/b/f
+    """
+    frame = UdpFrame()
+
+    # 1. 基本长度检查
+    if len(frame_str) < 27:
+        print(f"帧长度不足: {len(frame_str)} < 27")
+        return frame
+
+    # 2. 验证帧头帧尾
+    if frame_str[:4] != "/f/b":
+        print(f"帧头错误: {frame_str[:4]}")
+        return frame
+
+    if frame_str[-4:] != "/b/f":
+        print(f"帧尾错误: {frame_str[-4:]}")
+        return frame
+
+    # 3. 去掉帧头帧尾
+    data = frame_str[4:-4]
+
+    # 4. 按"III"分割
+    parts = data.split("III")
+
+    # 格式应该是: ["", count, cmd_id, content_len, content, ""]
+    # parts[0]是空（因为开头就是III），parts[-1]是空（因为结尾是III）
+
+    if len(parts) < 6:
+        print(f"分割字段数量不足: {len(parts)}")
+        return frame
+
+    # 5. 填充帧数据
+    frame.head = "/f/b"
+    frame.tail = "/b/f"
+
+    try:
+        # parts[1]是count, parts[2]是cmd_id, parts[3]是content_len, parts[4]是content
+        frame.count = int(parts[1]) if parts[1] else 0
+        frame.cmd_id = int(parts[2]) if parts[2] else 0
+        frame.content_len = int(parts[3]) if parts[3] else 0
+        frame.content = parts[4] if len(parts) > 4 else ""
+
+    except ValueError as e:
+        print(f"数据转换错误: {e}")
+        return frame
+
+    # 6. 验证内容长度
+    if frame.content_len > 0 and len(frame.content) != frame.content_len:
+        print(f"警告: 内容长度不匹配 - 声明={frame.content_len}, 实际={len(frame.content)}")
+
+    return frame
+
+def get_robot_lua_program_500_err_code(content: str) -> Tuple[int, int]:
+
+    #获取lua程序500错误行号和错误码
+    #Args:
+    #   content: 错误内容字符串
+    #Returns:
+    #    Tuple[int, int]: (错误行号, Lua错误码)
+
+    err_lin_num = 0
+    lua_err_code = 0
+
+    # 检查是否是lua错误
+    lua_pos = content.find(".lua")
+    if lua_pos == -1:
+        return err_lin_num, lua_err_code
+
+    # 找第一个冒号（文件名后的冒号）
+    colon1 = content.find(':', lua_pos)
+    if colon1 == -1:
+        return err_lin_num, lua_err_code
+
+    # 找第二个冒号（行号后的冒号）
+    colon2 = content.find(':', colon1 + 1)
+    if colon2 == -1:
+        return err_lin_num, lua_err_code
+
+    # 提取行号
+    line_str = content[colon1 + 1:colon2]
+    try:
+        err_lin_num = int(line_str)
+    except ValueError:
+        pass
+
+    # 找错误码
+    errcode_pos = content.find("errcode", colon2)
+    if errcode_pos == -1:
+        return err_lin_num, lua_err_code
+
+    # 提取错误码数字
+    code_start = -1
+    for i in range(errcode_pos + 7, len(content)):
+        if content[i].isdigit():
+            code_start = i
+            break
+
+    if code_start != -1:
+        code_str = ""
+        for i in range(code_start, len(content)):
+            if content[i].isdigit():
+                code_str += content[i]
+            else:
+                break
+        try:
+            lua_err_code = int(code_str)
+        except ValueError:
+            pass
+
+    return err_lin_num, lua_err_code
+
+class FrUdpClient:
+    """
+    FR UDP通信客户端类（内部实现，不对外暴露）
+    通过20007端口创建UDP套接字
+    发送：透传，不封装
+    接收：解析成帧结构，通过回调返回给上层
+    """
+
+    def __init__(self, ip: str, port: int = 20007):
+        """
+        初始化FR UDP客户端
+        Args:
+            ip: 机器人IP地址
+            port: UDP端口，默认20007
+        """
+        self.ip = ip
+        self.port = port
+        self.callback = None
+
+        # UDP套接字
+        self.udp_socket: Optional[socket.socket] = None
+
+        # 线程控制
+        self.stop_event = threading.Event()
+        self.recv_thread: Optional[threading.Thread] = None
+
+        # 接收缓冲区（字符串）
+        self.recv_buffer = ""
+        self.buffer_lock = threading.Lock()
+
+        # 创建UDP套接字
+        self._create_socket()
+
+        print(f"FrUdpClient 初始化完成 - 目标IP: {ip}:{port}")
+
+    def _create_socket(self):
+        """创建UDP套接字"""
+        try:
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket.settimeout(1.0)
+            self.udp_socket.bind(('0.0.0.0', 0))  # 绑定到任意本地端口
+
+            local_host, local_port = self.udp_socket.getsockname()
+
+            print(f"UDP套接字创建成功 - 本地端口: {local_port}")
+
+        except Exception as e:
+            print(f"UDP套接字创建失败: {e}")
+            self.udp_socket = None
+
+    def start_recv_thread(self):
+        """启动接收线程"""
+        if self.recv_thread and self.recv_thread.is_alive():
+            return
+
+        self.stop_event.clear()
+        self.recv_thread = threading.Thread(
+            target=self._recv_thread_func,
+            name="RobotUdpDataRecvThread",
+            daemon=True
+        )
+        self.recv_thread.start()
+        print("RobotUdpDataRecvThread 已启动")
+
+    def stop_recv_thread(self):
+        """停止接收线程"""
+        self.stop_event.set()
+        if self.recv_thread:
+            self.recv_thread.join(timeout=3.0)
+
+    def _recv_thread_func(self):
+        """UDP接收线程函数"""
+        while not self.stop_event.is_set():
+            try:
+                if not self.udp_socket:
+                    time.sleep(1)
+                    continue
+
+                data, addr = self.udp_socket.recvfrom(65535)
+
+                # 将接收到的字节数据转换为字符串
+                try:
+                    received_str = data.decode('utf-8')
+                except UnicodeDecodeError:
+                    print(f"收到非UTF-8数据，长度: {len(data)} 字节")
+                    continue
+
+                # 将接收到的字符串添加到缓冲区
+                with self.buffer_lock:
+                    self.recv_buffer += received_str
+
+                    # 从缓冲区中提取并处理完整的帧
+                    self._process_buffer()
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if not self.stop_event.is_set():
+                    print(f"UDP接收错误: {e}")
+                time.sleep(0.1)
+
+    def _process_buffer(self):
+        """处理接收缓冲区中的帧数据"""
+        # 从缓冲区中分割出完整的帧
+        frames = split_frame(self.recv_buffer)
+
+        if frames:
+            # 找到最后一个完整帧的结束位置
+            last_frame_end = self.recv_buffer.rfind("/b/f")
+            if last_frame_end != -1:
+                # 保留未完成的数据
+                self.recv_buffer = self.recv_buffer[last_frame_end + 4:]
+            else:
+                self.recv_buffer = ""
+
+            # 处理每个完整的帧
+            for frame_str in frames:
+                self._process_frame(frame_str)
+
+    def _process_frame(self, frame_str: str):
+        """
+        处理单个帧 - 解析并通过回调返回给上层
+
+        Args:
+            frame_str: 帧字符串
+        """
+        # 解析帧
+        frame = unpack_frame(frame_str)
+
+        # 验证解析是否成功
+        if frame.head != "/f/b" or frame.tail != "/b/f":
+            print("帧解析失败")
+            return
+        # print(f"[DEBUG] 原始帧字符串: {frame_str}")
+        #print(f"收到UDP帧 - 计数:{frame.count} 命令ID:{frame.cmd_id} 数据长度:{frame.content_len}")
+
+
+        # 检查是否是Lua错误
+        if frame.cmd_id == 500:
+            err_lin_num, lua_err_code = get_robot_lua_program_500_err_code(frame.content)
+            if err_lin_num != 0 or lua_err_code != 0:
+                print(f"Lua程序错误 - 行号:{err_lin_num}, 错误码:{lua_err_code}")
+
+        # 调用回调函数，将解析后的帧数据返回给上层
+        if self.callback:
+            try:
+                # 回调函数格式: int callback(int srcType, int count, int cmdID, int daLen, string content)
+                self.callback(0, frame.count, frame.cmd_id, frame.content_len, frame.content)
+
+            except Exception as e:
+                print(f"回调执行错误: {e}")
+
+    def _verify_frame(self, frame):
+        if len(frame) < 20 or \
+                frame[:4] != "/f/b" or \
+                frame[-4:] != "/b/f":
+            return False
+
+        data = frame[4:-4]
+
+        parts = []
+        start = 0
+        separator = "III"
+
+        for i in range(5):
+            pos = data.find(separator, start)
+            if pos == -1:
+                return False
+            parts.append(data[start:pos])
+            start = pos + len(separator)
+        parts.append(data[start:])
+
+        try:
+            return len(parts) == 6 and \
+                all(parts[i] for i in range(1, 5)) and \
+                int(parts[3]) == len(parts[4])
+        except:
+            return False
+
+    def send_data(self, data: str) -> bool:
+        """
+        发送UDP数据 - 透传，不封装
+
+        Args:
+            data: 要发送的字符串数据
+
+        Returns:
+            bool: 是否发送成功
+        """
+        if not self.udp_socket:
+            print("UDP套接字未创建")
+            return False
+        if not self._verify_frame(data):
+            return RobotError.ERR_PARAM_VALUE
+        try:
+            encoded_data = data.encode('utf-8')
+            sent = self.udp_socket.sendto(encoded_data, (self.ip, self.port))
+
+            #(f"发送UDP数据 - 长度:{sent} 字节")
+            return sent == len(encoded_data)
+
+        except Exception as e:
+            print(f"发送UDP数据失败: {e}")
+            return RobotError.ERR_SOCKET_SEND_FAILED
+
+    def set_callback(self, callback: UdpFrameCallback):
+        """设置帧接收回调函数"""
+        self.callback = callback
+        print("回调函数已设置")
+
+    def close(self):
+        """关闭UDP套接字"""
+        self.stop_recv_thread()
+
+        if self.udp_socket:
+            try:
+                self.udp_socket.close()
+            except Exception:
+                pass
+            finally:
+                self.udp_socket = None
+        print("UDP套接字已关闭")
+
+    def __del__(self):
+        """析构函数"""
+        self.close()
 
 
 class RPC():
@@ -230,11 +617,13 @@ class RPC():
     log_output_model = -1
     queue = Queue(maxsize=10000 * 1024)
     logging_thread = None
-    is_conect = True
+    is_connect = True
     ROBOT_REALTIME_PORT = 20004
+    ROBOT_UDP_PORT = 20007
     # BUFFER_SIZE = 1024 * 2
     BUFFER_SIZE = 1024 * 1024
     thread=  threading.Thread()
+    UDPthread = threading.Thread()
     SDK_state=True
 
     sock_cli_state_state = False
@@ -262,6 +651,13 @@ class RPC():
         time.sleep(1)
         print(self.robot)
 
+        # 创建UDP客户端（内部实现）
+        self._udp_client = FrUdpClient(ip)
+        self._udp_client.start_recv_thread()
+
+        # UDP帧计数器 (0-65535循环)
+        self._udp_count = 0
+        self._udp_count_lock = threading.Lock()
 
         try:
             # 调用 XML-RPC 方法
@@ -269,19 +665,51 @@ class RPC():
             self.robot.GetControllerIP()
         except socket.timeout:
             print("XML-RPC connection timed out.")
-            RPC.is_conect = False
+            RPC.is_connect = False
 
         except socket.error as e:
             print("可能是网络故障，请检查网络连接。")
-            RPC.is_conect = False
+            RPC.is_connect = False
         except Exception as e:
             print("An error occurred during XML-RPC call:", e)
-            RPC.is_conect = False
+            RPC.is_connect = False
         finally:
             # 恢复默认超时时间
             self.robot = None
             socket.setdefaulttimeout(None)
             self.robot = xmlrpc.client.ServerProxy(link)
+
+    def SetUDPCmdRpyCallback(self, callback: UdpFrameCallback):
+        """
+        设置UDP帧接收回调函数
+        Args:
+            callback: 回调函数，格式为 int callback(int srcType, int count, int cmdID, int daLen, string content)
+        """
+        if hasattr(self, '_udp_client'):
+            self._udp_client.set_callback(callback)
+
+    def SendUDPFrame(self, data: str) -> bool:
+        """
+        发送UDP数据 - 透传，不封装
+        Args:
+            data: 要发送的字符串数据
+        Returns:
+            bool: 是否发送成功
+        """
+        if hasattr(self, '_udp_client'):
+            return self._udp_client.send_data(data)
+        return False
+
+    def _get_next_udp_count(self):
+        """
+        获取下一个UDP帧计数，从0递增到65535循环
+        Returns:
+            int: 下一个计数
+        """
+        with self._udp_count_lock:
+            current = self._udp_count
+            self._udp_count = (self._udp_count + 1) % 65536  # 0-65535循环
+            return current
 
     def connect_to_robot(self):
         """连接到机器人的实时端口"""
@@ -306,7 +734,7 @@ class RPC():
         max_retries = 1000
         retry_interval = 2  # 2秒
         # with self.lock:  # 加锁
-        # RPC.is_conect = False
+        # RPC.is_connect = False
         # print("断联")
         self.reconnect_flag = True
         for attempt in range(max_retries):
@@ -341,7 +769,7 @@ class RPC():
                 #     # self.Mode(0)  # 调用一个简单的 XML-RPC 方法
                 #     print("XML-RPC 连接验证成功")
                 #     self.reconnect_flag = False
-                #     # RPC.is_conect = True
+                #     # RPC.is_connect = True
                 #     return True
                 # except Exception as ex:
                 #     print("XML-RPC 连接验证失败:", ex)
@@ -880,7 +1308,7 @@ class RPC():
     @xmlrpc_timeout
     def GetSDKVersion(self):
         error = 0
-        sdk = ["SDK:V2.2.3", "Robot:V3.9.3"]
+        sdk = ["SDK:V2.2.4", "Robot:V3.9.4"]
         return error, sdk
 
     """   
@@ -1523,45 +1951,113 @@ class RPC():
                 flag = True
         return error
 
-    """   
+    """
     @brief  伺服运动开始，配合ServoJ、ServoCart指令使用
-    @param  [in] NULL
+    @param  [in] cmdType 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ServoMoveStart(self):
+    def ServoMoveStart(self, cmdType=0):
         while self.reconnect_flag:
             time.sleep(0.1)
-        flag = True
-        while flag:
+
+        if cmdType == 0:
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoMoveStart()
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
             try:
-                error = self.robot.ServoMoveStart()
-                flag = False
-            except socket.error as e:
-                flag = True
-        return error
+                # 获取下一个计数
+                count = self._get_next_udp_count()
+
+                # 构建UDP帧数据，内容直接为ServoMoveStart()
+                cmd_str = "ServoMoveStart()"
+                content_len = len(cmd_str)
+
+                # 使用固定命令ID，
+                cmd_id = 689
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, cmd_id, content_len, cmd_str
+                )
+
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, cmd_id, content_len))
+
+                success = self.SendUDPFrame(udp_data)
+
+                if success:
+                    return 0
+                else:
+                    return -1
+
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  伺服运动结束，配合ServoJ、ServoCart指令使用
-    @param  [in] NULL
+    @param  [in] cmdType 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ServoMoveEnd(self):
+    def ServoMoveEnd(self, cmdType=0):
         while self.reconnect_flag:
             time.sleep(0.1)
-        flag = True
-        while flag:
+
+        if cmdType == 0:
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoMoveEnd()
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
             try:
-                error = self.robot.ServoMoveEnd()
-                flag = False
-            except socket.error as e:
-                flag = True
-        return error
+                # 获取下一个计数
+                count = self._get_next_udp_count()
+
+                # 构建UDP帧数据，内容直接为ServoMoveEnd()
+                cmd_str = "ServoMoveEnd()"
+                content_len = len(cmd_str)
+
+                # 使用固定命令ID，
+                cmd_id = 690
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, cmd_id, content_len, cmd_str
+                )
+
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, cmd_id, content_len))
+
+                success = self.SendUDPFrame(udp_data)
+
+                if success:
+                    return 0
+                else:
+                    return -1
+
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  关节空间伺服模式运动
@@ -1573,16 +2069,38 @@ class RPC():
     @param  [in] 默认参数 filterT: 滤波时间，单位 [s]，暂不开放， 默认为0.0
     @param  [in] 默认参数 gain: 目标位置的比例放大器，暂不开放， 默认为0.0
     @param  [in] 默认参数 id: servoJ指令ID,默认为0
+    @param  [in] cmdType 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def ServoJ(self, joint_pos,axisPos, acc=0.0, vel=0.0, cmdT=0.008, filterT=0.0, gain=0.0, id=0):
+    def ServoJ(self, joint_pos, axisPos, acc=0.0, vel=0.0, cmdT=0.008, filterT=0.0, gain=0.0, id=0, cmdType=0):
+        """
+        关节空间伺服运动
+        Args:
+            joint_pos: 关节位置列表
+            axisPos: 轴位置列表
+            acc: 加速度
+            vel: 速度
+            cmdT: 命令周期
+            filterT: 滤波时间
+            gain: 增益
+            id: 命令ID
+            cmdType: 命令传输类型，0=XML-RPC，1=UDP透传
+
+        Returns:
+            错误码
+        """
+        # 处理重连标志
         while self.reconnect_flag:
             time.sleep(0.1)
+
+        # 安全检查
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
+
+        # 参数类型转换
         joint_pos = list(map(float, joint_pos))
         axisPos = list(map(float, axisPos))
         acc = float(acc)
@@ -1591,14 +2109,63 @@ class RPC():
         filterT = float(filterT)
         gain = float(gain)
         id = int(id)
-        flag = True
-        while flag:
+
+        # 根据cmdType选择传输方式
+        if cmdType == 0:
+            # 使用原有的XML-RPC接口
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoJ(joint_pos, axisPos, acc, vel, cmdT, filterT, gain, id)
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
+            # 使用UDP透传接口
             try:
-                error = self.robot.ServoJ(joint_pos,axisPos,acc, vel, cmdT, filterT, gain, id)
-                flag = False
-            except socket.error as e:
-                flag = True
-        return error
+                # 获取下一个计数
+                count = self._get_next_udp_count()
+
+                # 构建ServoJ命令字符串
+                joint_str = ",".join(["{:.4f}".format(j) for j in joint_pos])
+                axis_str = ",".join(["{:.4f}".format(a) for a in axisPos])
+
+                # 构建完整命令
+                cmd_str = "ServoJ({},{},{},{},{},{},{},{})".format(
+                    joint_str, axis_str,
+                    "{:.4f}".format(acc),
+                    "{:.4f}".format(vel),
+                    "{:.4f}".format(cmdT),
+                    "{:.4f}".format(filterT),
+                    "{:.4f}".format(gain),
+                    id
+                )
+
+                # 构建UDP帧数据
+                content_len = len(cmd_str)
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, 376, content_len, cmd_str
+                )
+
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, 376, content_len))
+
+                # 通过UDP发送
+                success = self.SendUDPFrame(udp_data)
+
+                if success:
+                    return 0
+                else:
+                    return -1
+
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  笛卡尔空间伺服模式运动
@@ -1642,24 +2209,46 @@ class RPC():
 
     """   
     @brief  关节扭矩控制开始
-    @param  [in] NULL
+    @param  [in] cmdType 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
-
     @log_call
     @xmlrpc_timeout
-    def ServoJTStart(self):
+    def ServoJTStart(self, cmdType=0):
         while self.reconnect_flag:
             time.sleep(0.1)
-        flag = True
-        while flag:
-            try:
-                error = self.robot.ServoJTStart()
-                flag = False
-            except socket.error as e:
-                flag = True
 
-        return error
+        if cmdType == 0:
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoJTStart()
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
+            try:
+                count = self._get_next_udp_count()
+                cmd_str = "ServoJTStart()"
+                content_len = len(cmd_str)
+                cmd_id = 1199
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, cmd_id, content_len, cmd_str
+                )
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, cmd_id, content_len))
+                success = self.SendUDPFrame(udp_data)
+                if success:
+                    return 0
+                else:
+                    return -1
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  关节扭矩控制
@@ -1668,52 +2257,127 @@ class RPC():
     @param  [in] 默认参数 checkFlag 检测策略 0-不限制；1-限制功率；2-限制速度；3-功率和速度同时限制,默认0
     @param  [in] 默认参数 jPowerLimit 关节最大功率限制(W)，默认[0.0,0.0,0.0,0.0,0.0,0.0]
     @param  [in] 默认参数 jVelLimit 关节最大速度(°/s)，默认[0.0,0.0,0.0,0.0,0.0,0.0]
+    @param  [in] 默认参数 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
     def ServoJT(self, torque, interval, checkFlag=0, jPowerLimit=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                jVelLimit=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+                jVelLimit=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], cmdType=0):
+        # 处理重连标志
         while self.reconnect_flag:
             time.sleep(0.1)
+
+        # 安全检查
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
+
+        # 参数类型转换
         torque = list(map(float, torque))
         interval = float(interval)
         checkFlag = int(checkFlag)
         jPowerLimit = list(map(float, jPowerLimit))
         jVelLimit = list(map(float, jVelLimit))
-        flag = True
-        while flag:
-            try:
-                error = self.robot.ServoJT(torque, interval, checkFlag, jPowerLimit, jVelLimit)
-                flag = False
-            except socket.error as e:
-                flag = True
 
-        return error
+        # 根据cmdType选择传输方式
+        if cmdType == 0:
+            # 使用原有的XML-RPC接口
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoJT(torque, interval, checkFlag, jPowerLimit, jVelLimit)
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
+            # 使用UDP透传接口
+            try:
+                # 获取下一个计数
+                count = self._get_next_udp_count()
+
+                # 构建ServoJT命令字符串
+                torque_str = "{" + ",".join(["{:.4f}".format(t) for t in torque]) + "}"
+                power_str = "{" + ",".join(["{:.4f}".format(p) for p in jPowerLimit]) + "}"
+                vel_str = "{" + ",".join(["{:.4f}".format(v) for v in jVelLimit]) + "}"
+
+                # 构建完整命令
+                cmd_str = "ServoJT({},{},{},{},{})".format(
+                    torque_str,
+                    "{:.4f}".format(interval),
+                    checkFlag,
+                    power_str,
+                    vel_str
+                )
+
+                # 构建UDP帧数据
+                content_len = len(cmd_str)
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, 1200, content_len, cmd_str  # 假设ServoJT使用命令ID=100
+                )
+
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, 100, content_len))
+
+                # 通过UDP发送
+                success = self.SendUDPFrame(udp_data)
+
+                if success:
+                    return 0
+                else:
+                    return -1
+
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  关节扭矩控制结束
-    @param  [in] NULL
+    @param  [in] cmdType 命令传输类型，0=XML-RPC，1=UDP透传
     @return 错误码 成功-0  失败-错误码
     """
-
     @log_call
     @xmlrpc_timeout
-    def ServoJTEnd(self):
+    def ServoJTEnd(self, cmdType=0):
         while self.reconnect_flag:
             time.sleep(0.1)
-        flag = True
-        while flag:
-            try:
-                error = self.robot.ServoJTEnd()
-                flag = False
-            except socket.error as e:
-                flag = True
 
-        return error
+        if cmdType == 0:
+            flag = True
+            while flag:
+                try:
+                    error = self.robot.ServoJTEnd()
+                    flag = False
+                except socket.error as e:
+                    flag = True
+            return error
+
+        elif cmdType == 1:
+            try:
+                count = self._get_next_udp_count()
+                cmd_str = "ServoJTEnd()"
+                content_len = len(cmd_str)
+                cmd_id = 1201
+                udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+                    count, cmd_id, content_len, cmd_str
+                )
+                #print("UDP发送 - 计数:{} 命令ID:{} 长度:{}".format(count, cmd_id, content_len))
+                success = self.SendUDPFrame(udp_data)
+                if success:
+                    return 0
+                else:
+                    return -1
+            except Exception as e:
+                print("UDP发送异常: {}".format(e))
+                return -2
+        else:
+            print("不支持的cmdType: {}".format(cmdType))
+            return RobotError.ERR_PARAM_VALUE
 
     """   
     @brief  笛卡尔空间点到点运动
@@ -7830,6 +8494,7 @@ class RPC():
     @return 返回值（调用成功返回） reconnectEnable	通讯断开自动重连使能 0-不使能 1-使能
     @return 返回值（调用成功返回） reconnectPeriod	重连周期间隔(ms)
     @return 返回值（调用成功返回） reconnectNum	重连次数
+    @param [out] selfConnect 重启控制箱后是否自动重连；0-不重连；1-重连
     """
 
     @log_call
@@ -7847,7 +8512,7 @@ class RPC():
 
         if _error[0] == 0:
             return _error[0], [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6], _error[7], _error[8],
-                               _error[9]]
+                               _error[9],_error[10]]
         else:
             return _error[0],None
 
@@ -10666,33 +11331,34 @@ class RPC():
 
         return error
 
-    """   
-    @brief  获取当前配置的控制器外设协议LUA文件名
-    @return 错误码 成功- 0, 失败-错误码     
-    @return 返回值（调用成功返回） name[4] lua文件名称 “CTRL_LUA_test.lua”
+    """
+    @brief 获取控制箱开放协议Lua文件名称列表
+    @param [out] name 开放协议Lua文件名称数组
+    @return 错误码
     """
     @log_call
     @xmlrpc_timeout
     def GetCtrlOpenLUAName(self):
         while self.reconnect_flag:
             time.sleep(0.1)
+
         flag = True
         while flag:
             try:
-                error = self.robot.GetCtrlOpenLUAName()
+                _error = self.robot.GetCtrlOpenLUAName()
                 flag = False
             except socket.error as e:
                 flag = True
 
-        if error[0] == 0:
-            par = error[2].split(',')
-            if 4 != sizeof(par):
-                self.log_error("GetCtrlOpenLUAName fail")
-                return -1
-            else:
-                return error[0], [error[1], error[2], error[3], error[4]]
+        error = _error[0]
+        if error == 0:
+            paramStr = str(_error[1])
+            # Split the string by comma to get file names
+            name = paramStr.split(',')
+            return error, name
         else:
-            return error
+            logger_error(f"execute GetCtrlOpenLUAName fail {error}")
+            return error, None
 
     """   
     @brief  加载控制器LUA协议
@@ -11005,21 +11671,24 @@ class RPC():
 
     """   
     @brief 设置焊机控制模式
-    @param [in] mode 焊机控制模式;0-一元化
+    @param [in] mode 焊机控制模式;焊机控制模式;0-直流一元模式；1-脉冲一元模式；2-JOB模式；3-近控模式；4-分别模式；5-CC/CV模式；6-TIG；7-CMT
+    @param [in] ioType 控制类型；0-控制箱IO；1-数字通信协议(UDP);2-数字通信协议(ModbusTCP)
     @return 错误码 成功- 0, 失败-错误码
     """
 
     @log_call
     @xmlrpc_timeout
 
-    def SetWeldMachineCtrlMode(self, mode):
+    def SetWeldMachineCtrlMode(self, mode, ioType=1):
         while self.reconnect_flag:
             time.sleep(0.1)
         mode = int(mode)
+        ioType = int(ioType)
+        param = [ioType , mode]
         flag = True
         while flag:
             try:
-                error = self.robot.SetWeldMachineCtrlMode(mode)
+                error = self.robot.SetWeldMachineCtrlMode(param)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -11907,7 +12576,7 @@ class RPC():
                 flag = False
             except socket.error as e:
                 flag = True
-        
+
         return error
 
     """2025.03.19"""
@@ -14717,3 +15386,826 @@ class RPC():
         if error == 0:
             return error, [float(_error[1]), float(_error[2]), float(_error[3]),float(_error[4]), float(_error[5]), float(_error[6])]
         return error, None
+
+    """3.9.4"""
+    """2026.02.28"""
+    """
+    @brief 运动到TPD轨迹记录起点
+    @param  [in] 必选参数 name 轨迹文件名
+    @param  [in] 必选参数 moveType 运动类型；0-PTP; 1-LIN
+    @param  [in] 必选参数 ovl 速度缩放百分比，范围[0~100]
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def MoveToTPDStart(self, name, moveType, ovl):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        name = str(name)
+        moveType = int(moveType)
+        ovl = float(ovl)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.MoveToTPDStart(name, moveType, ovl)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 开启末端通用透传功能
+    @param [in] 使能，0-关闭，1-开启
+    @return  错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetAxleGenComEnable(self, mode):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        mode = int(mode)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetAxleGenComEnable(mode)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 按长度获取周期数据
+    @param [in] len，返回的长度
+    @return  错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetAxleGenComCycleData(self, len):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        len = int(len)
+        cycle_data = [0] * len
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetAxleGenComCycleData(len)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            for i in range(len):
+                cycle_data[i] = int(_error[i + 1])
+            return error, cycle_data
+        return error
+
+    """
+    @brief 末端发送非周期数据并等待应答
+    @param [in] len_snd，发送的长度
+    @param [in] sndBuff[]，发送数据
+    @param [in] len_rcv，选择接受的长度
+    @param [out] rcvBuff[]，应答的数据
+    @return  错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SndRcvAxleGenComCmdData(self, len_snd, sndBuff, len_rcv):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        len_snd = int(len_snd)
+        sndBuff = list(map(int, sndBuff))
+        len_rcv = int(len_rcv)
+        rcv_data = [0] * len_rcv
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.SndRcvAxleGenComCmdData(len_snd, sndBuff, len_rcv)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            for i in range(len_rcv):
+                rcv_data[i] = int(_error[i + 1])
+            return error, rcv_data
+        return error,None
+
+    """
+    @brief 设置端口通讯断开时停止机器人运行
+    @param [in] portID 端口编号 0-8080；1-8083；2-20002；3-20004
+    @param [in] enable 0-关闭；1-开启
+    @param [in] confirmTime 通讯中断确认时长(ms)[0-5000]
+    @return  错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SetRobotStopOnComDisc(self, portID, enable, confirmTime):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        portID = int(portID)
+        enable = int(enable)
+        confirmTime = int(confirmTime)
+        # 将三个参数合并成一个数组
+        params = [portID, enable, confirmTime]
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetRobotStopOnComDisc(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取端口通讯断开时停止机器人运行参数
+    @param [in] portID 端口编号 0-8080；1-8083；2-20002；3-20004
+    @param [out] enable 0-关闭；1-开启
+    @param [out] confirmTime 通讯中断确认时长(ms)[0-5000]
+    @return  错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetRobotStopOnComDisc(self, portID):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        portID = int(portID)
+        # 将portID作为数组传入
+        params = [portID]
+        enable = 0
+        confirmTime = 0
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetRobotStopOnComDisc(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            enable = int(_error[1])
+            confirmTime = int(_error[2])
+            return error, enable, confirmTime
+        return error, None, None
+
+    """
+    @brief 设置安全速度参数
+    @param [in] enable 0-关；1-手动模式启用；2-所有模式启用(不支持自动限速)
+    @param [in] maxTCPVel 限制最大TCP速度;[0-1000]mm/s
+    @param [in] strategy 超速后策略；0-停止报警；1-自动限速；2-停止报警并去使能
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetVelReducePara(self, enable, maxTCPVel, strategy):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        enable = int(enable)
+        maxTCPVel = float(maxTCPVel)
+        strategy = int(strategy)
+
+        # 参数校验：当enable==2且strategy==1时返回参数错误
+        if enable == 2 and strategy == 1:
+            return RobotError.ERR_PARAM_VALUE
+
+        # 将三个参数合并成一个数组
+        params = [enable, maxTCPVel, strategy]
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetVelReducePara(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 定点摆动开始
+    @param [in] weaveNum 摆动编号[0-7]
+    @param [in] mode 0-工具坐标系；1-参考点
+    @param [in] refPoint 参考点笛卡尔坐标[x,y,z,a,b,c]
+    @param [in] weaveTime 摆动时间[s]
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def OriginPointWeaveStart(self, weaveNum, mode, refPoint, weaveTime):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        weaveNum = int(weaveNum)
+        mode = int(mode)
+        refPoint = list(map(float, refPoint))
+        weaveTime = float(weaveTime)
+
+        # 将参考点坐标拆分成6个参数
+        params = [
+            weaveNum,
+            mode,
+            refPoint[0],
+            refPoint[1],
+            refPoint[2],
+            refPoint[3],
+            refPoint[4],
+            refPoint[5],
+            weaveTime
+        ]
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.OriginPointWeaveStart(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 定点摆动结束
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def OriginPointWeaveEnd(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.OriginPointWeaveEnd()
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置可配置CI端口功能
+    @param [in] config CI0-CI7功能编码数组,0-无;1-起弧成功;2-焊机准备;3-传送带检测;4-暂停;5-恢复;6-启动;7-停止;
+      58-暂停/恢复;9-启动/停止;10-脚踏拖动;11-移至作业原点;12-手自动切换;
+      613-焊丝寻位成功;14-运动中断;15-启动主程序;16-启动倒带;17-启动确认;
+      718-光电检测信号X;19-光电检测信号Y;20-外部急停输入信号1;21-外部急停输入信号2;
+      822-一级缩减模式;23-二级缩减模式;24-三级缩减模式(停止);25-恢复焊接;26-终止焊接;
+      927-辅助拖动开启;28-辅助拖动关闭;29-辅助拖动开启/关闭;30-清除所有错误;
+      1031-手自动切换(高低电平);32-使能;33-去使能;34-使能/去使能(上升下降沿);35-定点跟踪开始/结束
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetDIConfig(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        # 将config数组转换为整数列表
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetDIConfig(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取控制箱可配置CI端口功能
+    @param [out] config CI0-CI7功能编码数组,0-无;1-起弧成功;2-焊机准备;3-传送带检测;4-暂停;5-恢复;6-启动;7-停止;
+      58-暂停/恢复;9-启动/停止;10-脚踏拖动;11-移至作业原点;12-手自动切换;
+      613-焊丝寻位成功;14-运动中断;15-启动主程序;16-启动倒带;17-启动确认;
+      718-光电检测信号X;19-光电检测信号Y;20-外部急停输入信号1;21-外部急停输入信号2;
+      822-一级缩减模式;23-二级缩减模式;24-三级缩减模式(停止);25-恢复焊接;26-终止焊接;
+      927-辅助拖动开启;28-辅助拖动关闭;29-辅助拖动开启/关闭;30-清除所有错误;
+      1031-手自动切换(高低电平);32-使能;33-去使能;34-使能/去使能(上升下降沿);35-定点跟踪开始/结束
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDIConfig(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDIConfig()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置可配置CO端口功能
+    @param [in] config CO0-CO7功能编码数组,0-无;1-机器人报错;2-机器人运动中;3-喷涂启停;4-喷涂清枪;5-送气信号;6-起弧信号;7-点动送丝;
+      58-反向送丝;9-JOB输入口1;10-JOB输入口2;11-JOB输入口3;12-传送带启停控制;13-机器人暂停中;14-到达作业原点;
+      615-到达干涉区;16-焊丝寻位启停控制;17-机器人启动完成;18-程序启动停止;19-自动手动模式;20-急停输出信号1-安全;
+      721-急停输出信号2-安全;22-LUA脚本程序运行停止;23-安全状态输出-安全;24-保护性停止状态输出-安全;
+      825-机器人运动中-安全;26-机器人缩减模式-安全;27-机器人非缩减模式-安全;28-机器人非停止;29-机器人报错-指令点错误;
+      930-机器人报错-驱动器错误;31-机器人报错-超出软限位错误;32-机器人报错-碰撞错误;33-机器人报错-活动从站数量错误;
+      1034-机器人报错-从站错误;35-机器人报错-IO错误;36-机器人报错-夹爪错误;37-机器人报错-文件错误;38-机器人报错-奇异位姿错误;
+      1139-机器人报错-驱动器通信错误;40-机器人报错-参数错误;41-机器人报错-外部轴超出软限位错误;42-机器人警告-警告;
+      1243-机器人警告-安全门警告;44-机器人警告-运动警告;45-机器人警告-干涉区警告;46-机器人警告-安全墙警告;
+      1347-使能状态;48-断线自动抬升中;49-立方体1干涉警告;50-立方体2干涉警告;51-立方体3干涉警告;52-立方体4干涉警告;
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetDOConfig(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetDOConfig(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取可配置CO端口功能
+    @param [out] config CO0-CO7功能编码数组,0-无;1-机器人报错;2-机器人运动中;3-喷涂启停;4-喷涂清枪;5-送气信号;6-起弧信号;7-点动送丝;
+      58-反向送丝;9-JOB输入口1;10-JOB输入口2;11-JOB输入口3;12-传送带启停控制;13-机器人暂停中;14-到达作业原点;
+      615-到达干涉区;16-焊丝寻位启停控制;17-机器人启动完成;18-程序启动停止;19-自动手动模式;20-急停输出信号1-安全;
+      721-急停输出信号2-安全;22-LUA脚本程序运行停止;23-安全状态输出-安全;24-保护性停止状态输出-安全;
+      825-机器人运动中-安全;26-机器人缩减模式-安全;27-机器人非缩减模式-安全;28-机器人非停止;29-机器人报错-指令点错误;
+      930-机器人报错-驱动器错误;31-机器人报错-超出软限位错误;32-机器人报错-碰撞错误;33-机器人报错-活动从站数量错误;
+      1034-机器人报错-从站错误;35-机器人报错-IO错误;36-机器人报错-夹爪错误;37-机器人报错-文件错误;38-机器人报错-奇异位姿错误;
+      1139-机器人报错-驱动器通信错误;40-机器人报错-参数错误;41-机器人报错-外部轴超出软限位错误;42-机器人警告-警告;
+      1243-机器人警告-安全门警告;44-机器人警告-运动警告;45-机器人警告-干涉区警告;46-机器人警告-安全墙警告;
+      1347-使能状态;48-断线自动抬升中;49-立方体1干涉警告;50-立方体2干涉警告;51-立方体3干涉警告;52-立方体4干涉警告;
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDOConfig(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDOConfig()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置末端可配置End-CI端口功能
+    @param [in] config End CI0-CI1功能编码数组,0-无;1-拖动示教工具开关;2-点记录信号;3-手自动切换（脉冲信号）;4-TPD记录启动/停止;5-暂停运动;
+      56-恢复运动;7-启动;8-停止;9-暂停/恢复;10-启动/停止;11-力传感器辅助拖动开启;12-力传感器辅助拖动关闭;
+      613-力传感器辅助拖动开启/关闭;14-激光检测信号X;15-激光检测信号Y;16-PTP运动至作业原点;17-运动中断，根据信号停止当前运动;
+      718-启动主程序;19-启动倒带;20-启动确认;21-恢复焊接;22-终止焊接;23-清除错误;24-手自动切换（高低电平）
+      825-使能;26-去使能;27-使能/去使能;28-激光伺服跟踪启停信号;
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetToolDIConfig(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetToolDIConfig(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取末端可配置End-CI端口功能
+    @param [out] config End CI0-CI1功能编码数组,0-无;1-拖动示教工具开关;2-点记录信号;3-手自动切换（脉冲信号）;4-TPD记录启动/停止;5-暂停运动;
+      56-恢复运动;7-启动;8-停止;9-暂停/恢复;10-启动/停止;11-力传感器辅助拖动开启;12-力传感器辅助拖动关闭;
+      613-力传感器辅助拖动开启/关闭;14-激光检测信号X;15-激光检测信号Y;16-PTP运动至作业原点;17-运动中断，根据信号停止当前运动;
+      718-启动主程序;19-启动倒带;20-启动确认;21-恢复焊接;22-终止焊接;23-清除错误;24-手自动切换（高低电平）
+      825-使能;26-去使能;27-使能/去使能;28-激光伺服跟踪启停信号;
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetToolDIConfig(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetToolDIConfig()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(2)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置控制箱可配置CI有效状态
+    @param [in] config CI0-CI7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetDIConfigLevel(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetDIConfigLevel(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取控制箱可配置CI有效状态
+    @param [out] config CI0-CI7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDIConfigLevel(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDIConfigLevel()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置控制箱可配置CO有效状态
+    @param [in] config CO0-CO7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetDOConfigLevel(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetDOConfigLevel(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取控制箱可配置CO有效状态
+    @param [out] config CO0-CO7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDOConfigLevel(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDOConfigLevel()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置末端可配置CI有效状态
+    @param [in] config CI0-CI1端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetToolDIConfigLevel(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetToolDIConfigLevel(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取末端可配置CI有效状态
+    @param [out] config CI0-CI1端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetToolDIConfigLevel(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetToolDIConfigLevel()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(2)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置控制箱标准DI有效状态
+    @param [in] config DI0-DI7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetStandardDILevel(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetStandardDILevel(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取控制箱标准DI有效状态
+    @param [out] config DI0-DI7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetStandardDILevel(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetStandardDILevel()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief 设置控制箱标准DO有效状态
+    @param [in] config DO0-DO7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetStandardDOLevel(self, config):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        config = [int(x) for x in config]
+        params = config
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetStandardDOLevel(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 获取控制箱标准DO有效状态
+    @param [out] config DO0-DO7端口有效状态数组；0-高电平有效；1-低电平有效
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetStandardDOLevel(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetStandardDOLevel()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            config = [int(_error[i + 1]) for i in range(8)]
+            return error, config
+        else:
+            return error, None
+
+    """
+    @brief UDP扩展轴定位完成时间设置
+    @param [in] time 定位完成时间[ms]
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetExAxisCmdDoneTime(self, time):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        time = float(time)
+        params = [time]
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetExAxisCmdDoneTime(params)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 下载开放协议Lua文件
+    @param [in] fileName 开放协议文件名称“CtrlDev_XXX.lua”
+    @param [in] savePath 开放协议保存文件路径
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def OpenLuaDownload(self, fileName, savePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        # 参数检查
+        if len(fileName) == 0:
+            return RobotError.ERR_UPLOAD_FILE_NOT_FOUND
+
+        # 检查文件扩展名
+        _file_name = fileName.split('.')
+        if len(_file_name) == 2 and _file_name[1] == "lua":
+            print(f"download open lua.")
+        else:
+            return RobotError.ERR_FILE_NAME
+
+        # 调用文件下载函数
+        errcode = self.__FileDownLoad(11, fileName, savePath)
+        return errcode
+
+    """
+    @brief 设置用户自定义机器人末端灯色
+    @param [in] r 末端红灯控制；0-灭；1-亮
+    @param [in] g 末端绿灯控制；0-灭；1-亮
+    @param [in] b 末端蓝灯控制；0-灭；1-亮
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetUserLEDColor(self, r, g, b):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        # 将bool值转换为int (True->1, False->0)
+        r = 1 if r else 0
+        g = 1 if g else 0
+        b = 1 if b else 0
+
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetUserLEDColor(r, g, b)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        return error
+
+    """
+    @brief 删除开放协议Lua文件
+    @param [in] fileName 要删除的开放协议lua文件名“CtrlDev_XXX.lua”
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def OpenLuaDelete(self, fileName):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        errcode = self.__FileDelete(11, fileName)
+        return errcode
+
+    """
+    @brief 删除所有开放协议Lua文件
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def AllOpenLuaDelete(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        errcode = self.__FileDelete(12, "openluas")
+        return errcode

@@ -23,41 +23,21 @@ def TestImpedanceControl(self):
     flag = 0
     search = 0
     robot.SetSpeed(20)
-    company = 17
-    device = 0
-    softversion = 0
-    bus = 1
-    robot.FT_SetConfig(company, device, softversion, bus)
-    time.sleep(1)
-    rnt,[company, device, softversion, bus] = robot.FT_GetConfig()
-    print(f"FT config:{company},{device},{softversion},{bus}")
-    time.sleep(1)
-    robot.FT_Activate(0)
-    time.sleep(1)
-    robot.FT_Activate(1)
-    time.sleep(1)
-    time.sleep(1)
-    robot.FT_SetZero(0)
-    time.sleep(1)
-    robot.FT_SetZero(1)
-    time.sleep(1)
 
-    forceThreshold = [30.0, 30.0, 30.0, 5.0, 5.0, 5.0]
-    m = [0.1, 0.1, 0.1, 0.02, 0.02, 0.02]
-    b = [1.0, 1.0, 1.0, 0.08, 0.08, 0.08]
+    forceThreshold = [10.0, 10.0, 10.0, 1.0, 1.0, 1.0]
+    m = [0.04,0.04,0.04,0.01,0.01,0.01]
+    b = [0.1,0.1,0.1,0.08,0.08,0.08]
     k = [0.0] * 6
 
-    rtn = robot.ImpedanceControlStartStop(1, 1, forceThreshold, m, b, k, 1000, 500, 100, 100)
+    rtn = robot.ImpedanceControlStartStop(1, 0, forceThreshold, m, b, k, 50, 50, 100, 100)
     print(f"ImpedanceControlStartStop errcode:{rtn}")
-    rtn = robot.MoveL(desc_pos=desc_pos1,tool= tool,user= user,vel= vel,speedPercent=1)
-    rtn = robot.MoveL(desc_pos=desc_pos2,tool= tool,user= user,vel= vel,speedPercent=1)
-    rtn = robot.MoveL(desc_pos=desc_pos1,tool= tool,user= user,vel= vel,speedPercent=1)
-    rtn = robot.MoveL(desc_pos=desc_pos2,tool= tool,user= user,vel= vel,speedPercent=1)
-    rtn = robot.MoveL(desc_pos=desc_pos1,tool= tool,user= user,vel= vel,speedPercent=1)
-    rtn = robot.MoveL(desc_pos=desc_pos2,tool= tool,user= user,vel= vel,speedPercent=1)
-    print(f"movel errcode:{rtn}")
+    rtn = robot.MoveJ(joint_pos=j1,tool= tool,user= user,vel= vel,acc= acc,ovl= ovl,exaxis_pos= epos,blendT= -1,offset_flag= 0,offset_pos= offset_pos)
+    rtn = robot.MoveJ(joint_pos=j2,tool= tool,user= user,vel= vel,acc= acc,ovl= ovl,exaxis_pos= epos,blendT= -1,offset_flag= 0,offset_pos= offset_pos)
+    rtn = robot.MoveJ(joint_pos=j1,tool= tool,user= user,vel= vel,acc= acc,ovl= ovl,exaxis_pos= epos,blendT= -1,offset_flag= 0,offset_pos= offset_pos)
+    rtn = robot.MoveJ(joint_pos=j2,tool= tool,user= user,vel= vel,acc= acc,ovl= ovl,exaxis_pos= epos,blendT= -1,offset_flag= 0,offset_pos= offset_pos)
+    print(f"movej errcode:{rtn}")
 
-    robot.ImpedanceControlStartStop(0, 1, forceThreshold, m, b, k, 1000, 500, 100, 100)
+    robot.ImpedanceControlStartStop(0, 0, forceThreshold, m, b, k, 50, 50, 100, 100)
 
     robot.CloseRPC()
     return 0
