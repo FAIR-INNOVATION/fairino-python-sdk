@@ -1,3 +1,0 @@
-[DEBUG] [2024-10-11 14:53:19,993 pid:8872]  SetLoggerLevel returned: 0.
-[INFO] [2024-10-11 14:53:19,993 pid:8872]  Calling WaitAI(,id=0, sign=0, value=8, maxtime=5000, opt=2).
-[DEBUG] [2024-10-11 14:53:19,996 pid:8872]  WaitAI returned: 0.

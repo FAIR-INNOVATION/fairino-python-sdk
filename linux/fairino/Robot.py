@@ -1,3 +1,4 @@
+import enum
 import xmlrpc.client
 import os
 import socket
@@ -14,9 +15,127 @@ import sys
 import ctypes
 from ctypes import *
 from typing import Optional
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple, Dict
 from dataclasses import dataclass
 # from Cython.Compiler.Options import error_on_unknown_names
+
+# ==================== CNDE帧类型定义 ====================
+CNDE_FRAME_HEAD = 0x5A5A          # 帧头
+CNDE_FRAME_TAIL = 0xA5A5          # 帧尾
+CNDE_FRAME_TYPE_INPUT_CONFIG = 0x00      # 输入配置帧（控制配置）Client->Robot
+CNDE_FRAME_TYPE_OUTPUT_CONFIG = 0x01     # 输出配置帧（状态配置）Client->Robot
+CNDE_FRAME_TYPE_OUTPUT_START = 0x02      # CNDE输出启动 Client->Robot
+CNDE_FRAME_TYPE_OUTPUT_STOP = 0x03       # CNDE输出停止 Client->Robot
+CNDE_FRAME_TYPE_OUTPUT_DATA = 0x04       # 输出数据帧（状态数据）Robot->Client
+CNDE_FRAME_TYPE_INPUT_DATA = 0x05        # 输入数据帧（控制数据）Client->Robot
+CNDE_FRAME_TYPE_MESSAGE = 0x06           # 字符提示消息 Client<->Robot
+CNDE_FRAME_TYPE_SET_VERSION = 0x07       # 设置机器人CNDE协议版本号 Client->Robot
+CNDE_FRAME_TYPE_GET_VERSION = 0x08       # 获取机器人软固件版本 Client<->Robot
+
+# 最大数据长度
+CNDE_MAX_PKG_SIZE = 4096
+
+
+# ==================== CNDE数据包结构 ====================
+class CNDE_PKG:
+    """CNDE数据包结构（表2-1）"""
+
+    def __init__(self):
+        self.head = CNDE_FRAME_HEAD  # 帧头 2字节
+        self.count = 0  # 帧计数 1字节 (0~255)
+        self.type = 0  # 帧类型 1字节 (0~8)
+        self.len = 0  # 数据长度 2字节
+        self.data = b""  # 数据内容
+        self.tail = CNDE_FRAME_TAIL  # 帧尾 2字节
+
+    def Clear(self):
+        self.head = CNDE_FRAME_HEAD
+        self.count = 0
+        self.type = 0
+        self.len = 0
+        self.data = b""
+        self.tail = CNDE_FRAME_TAIL
+
+
+# ==================== CNDE帧处理函数 ====================
+def Int16ToByte(val: int) -> bytes:
+    """将16位整数转换为2字节小端序bytes"""
+    return bytes([val & 0x00FF, (val & 0xFF00) >> 8])
+
+
+def ByteToInt16(data: bytes) -> int:
+    """将2字节小端序bytes转换为16位整数"""
+    if len(data) < 2:
+        return 0
+    return (data[1] << 8) + data[0]
+
+
+def CNDEPkgToFrame(pkg: CNDE_PKG) -> bytes:
+    """将CNDE_PKG打包为帧字节流"""
+    frame = bytearray()
+    # 帧头
+    frame.extend(Int16ToByte(CNDE_FRAME_HEAD))
+    # 帧计数
+    frame.append(pkg.count)
+    # 帧类型
+    frame.append(pkg.type)
+    # 数据长度
+    frame.extend(Int16ToByte(pkg.len))
+    # 数据内容
+    if pkg.data:
+        frame.extend(pkg.data)
+    # 帧尾
+    frame.extend(Int16ToByte(CNDE_FRAME_TAIL))
+    return bytes(frame)
+
+
+def FrameToCNDEPkg(frame: bytes, pkg: CNDE_PKG) -> int:
+    """
+    将帧字节流解析为CNDE_PKG
+    Returns:
+        0: 成功
+        -1: 帧长度不足
+        -2: 数据长度不匹配
+        -3: 帧头错误
+        -4: 帧尾错误
+    """
+    if len(frame) < 8:
+        return -1
+
+    # 解析帧头
+    head = ByteToInt16(frame[0:2])
+    if head != CNDE_FRAME_HEAD:
+        return -3
+
+    # 帧计数
+    pkg.count = frame[2]
+    # 帧类型
+    pkg.type = frame[3]
+    # 数据长度
+    pkg.len = ByteToInt16(frame[4:6])
+
+    # 验证数据长度
+    if pkg.len != len(frame) - 8:
+        return -2
+
+    # 提取数据
+    if pkg.len > 0:
+        pkg.data = frame[6:6 + pkg.len]
+    else:
+        pkg.data = b""
+
+    # 验证帧尾
+    tail_pos = 6 + pkg.len
+    if len(frame) < tail_pos + 2:
+        return -4
+    tail = ByteToInt16(frame[tail_pos:tail_pos + 2])
+    if tail != CNDE_FRAME_TAIL:
+        return -4
+
+    pkg.head = head
+    pkg.tail = tail
+    return 0
+
 
 is_init =False
 class ROBOT_AUX_STATE(Structure):
@@ -50,72 +169,97 @@ class EXT_AXIS_STATUS(Structure):
 class WELDING_BREAKOFF_STATE(Structure):
     _pack_ = 1
     _fields_ = [
-        ("breakOffState", ctypes.c_uint8),        # 焊接中断状态
-        ("weldArcState", ctypes.c_uint8),        # 焊接电弧中断状态
+        ("breakOffState", c_uint8),        # 焊接中断状态
+        ("weldArcState", c_uint8),        # 焊接电弧中断状态
     ]
 
-"""   
-@brief  机器人状态反馈数据包
-"""
+# ==================== 完整机器人状态结构体 ====================
 class RobotStatePkg(Structure):
+    """
+    机器人状态反馈数据包
+    """
     _pack_ = 1
     _fields_ = [
-        ("frame_head", ctypes.c_uint16),      # 帧头 0x5A5A
-        ("frame_cnt", ctypes.c_uint8),         # 帧计数
-        ("data_len", ctypes.c_uint16),        # 数据长度
-        ("program_state", ctypes.c_uint8),     # 程序运行状态，1-停止；2-运行；3-暂停
-        ("robot_state", ctypes.c_uint8),       # 机器人运动状态，1-停止；2-运行；3-暂停；4-拖动
-        ("main_code", ctypes.c_int),          # 主故障码
-        ("sub_code", ctypes.c_int),           # 子故障码
-        ("robot_mode", ctypes.c_uint8),        # 机器人模式，0-自动模式；1-手动模式
-        ("jt_cur_pos", ctypes.c_double * 6),  # 机器人当前关节位置，假设有6个关节
-        ("tl_cur_pos", ctypes.c_double * 6),  # 工具当前位姿
-        ("flange_cur_pos", ctypes.c_double * 6),  # 末端法兰当前位姿
-        ("actual_qd", ctypes.c_double * 6),  # 机器人当前关节速度
-        ("actual_qdd", ctypes.c_double * 6),  # 机器人当前关节加速度
-        ("target_TCP_CmpSpeed", ctypes.c_double * 2),  # 机器人TCP合成指令速度
-        ("target_TCP_Speed", ctypes.c_double * 6),  # 机器人TCP指令速度
-        ("actual_TCP_CmpSpeed", ctypes.c_double * 2),  # 机器人TCP合成实际速度
-        ("actual_TCP_Speed", ctypes.c_double * 6),  # 机器人TCP实际速度
-        ("jt_cur_tor", ctypes.c_double * 6),  # 当前扭矩
-        ("tool", ctypes.c_int),  # 工具号
-        ("user", ctypes.c_int),  # 工件号
-        ("cl_dgt_output_h", ctypes.c_uint8),  # 数字输出15-8
-        ("cl_dgt_output_l", ctypes.c_uint8),  # 数字输出7-0
-        ("tl_dgt_output_l", ctypes.c_uint8),  # 工具数字输出7-0(仅bit0-bit1有效)
-        ("cl_dgt_input_h", ctypes.c_uint8),  # 数字输入15-8
-        ("cl_dgt_input_l", ctypes.c_uint8),  # 数字输入7-0
-        ("tl_dgt_input_l", ctypes.c_uint8),  # 工具数字输入7-0(仅bit0-bit1有效)
-        ("cl_analog_input", ctypes.c_uint16 * 2),  # 控制箱模拟量输入
-        ("tl_anglog_input", ctypes.c_uint16),  # 工具模拟量输入
-        ("ft_sensor_raw_data", ctypes.c_double * 6),  # 力/扭矩传感器原始数据
-        ("ft_sensor_data", ctypes.c_double * 6),  # 力/扭矩传感器数据
-        ("ft_sensor_active", ctypes.c_uint8),  # 力/扭矩传感器激活状态， 0-复位，1-激活
-        ("EmergencyStop", ctypes.c_uint8),  # 急停标志
-        ("motion_done", ctypes.c_int),  # 到位信号
-        ("gripper_motiondone", ctypes.c_uint8),  # 夹爪运动完成信号
-        ("mc_queue_len", ctypes.c_int),  # 运动队列长度
-        ("collisionState", ctypes.c_uint8),  # 碰撞检测，1-碰撞；0-无碰撞
-        ("trajectory_pnum", ctypes.c_int),  # 轨迹点编号
-        ("safety_stop0_state", ctypes.c_uint8),  # 安全停止信号SI0
-        ("safety_stop1_state", ctypes.c_uint8),  # 安全停止信号SI1
-        ("gripper_fault_id", ctypes.c_uint8),  # 错误夹爪号
-        ("gripper_fault", ctypes.c_uint16),  # 夹爪故障
-        ("gripper_active", ctypes.c_uint16),  # 夹爪激活状态
-        ("gripper_position", ctypes.c_uint8),  # 夹爪位置
-        ("gripper_speed", ctypes.c_int8),  # 夹爪速度
-        ("gripper_current", ctypes.c_int8),  # 夹爪电流
-        ("gripper_tmp", ctypes.c_int),  # 夹爪温度
-        ("gripper_voltage", ctypes.c_int),  # 夹爪电压
-        ("auxState", ROBOT_AUX_STATE),  # 485扩展轴状态
-        ("extAxisStatus", EXT_AXIS_STATUS*4),  # UDP扩展轴状态
-        ("extDIState", ctypes.c_uint16*8),  # 扩展DI输入
-        ("extDOState", ctypes.c_uint16*8),  # 扩展DO输出
-        ("extAIState", ctypes.c_uint16*4),  # 扩展AI输入
-        ("extAOState", ctypes.c_uint16*4),  # 扩展AO输出
-        ("rbtEnableState", ctypes.c_int),  # 机器人使能状态
-        ("jointDriverTorque", ctypes.c_double * 6),  # 关节驱动器当前扭矩
-        ("jointDriverTemperature", ctypes.c_double * 6),  # 关节驱动器当前温度
+        # 帧头信息
+        ("frame_head", c_uint16),           # 帧头，约定为0x5A5A
+        ("frame_cnt", c_uint8),             # 帧计数，循环计数0-255
+        ("data_len", c_uint16),             # 数据内容的长度
+        ("program_state", c_uint8),         # 程序运行状态，1-停止；2-运行；3-暂停
+        ("robot_state", c_uint8),             # 机器人运动状态，1-停止；2-运行；3-暂停；4-拖动
+        ("main_code", c_int),               # 主故障码
+        ("sub_code", c_int),                # 子故障码
+        ("robot_mode", c_uint8),            # 机器人模式，1-手动模式；0-自动模式
+
+        # 关节位置和速度
+        ("jt_cur_pos", c_double * 6),       # 6个轴当前关节位置，单位deg
+        ("tl_cur_pos", c_double * 6),       # 工具当前位置 [x,y,z,rx,ry,rz]
+        ("flange_cur_pos", c_double * 6),   # 末端法兰当前位置 [x,y,z,rx,ry,rz]
+        ("actual_qd", c_double * 6),        # 当前6个关节速度，单位deg/s
+        ("actual_qdd", c_double * 6),       # 当前6个关节加速度，单位deg/s^2
+        ("target_TCP_CmpSpeed", c_double * 2),  # TCP合成指令速度[位置mm/s,姿态deg/s]
+        ("target_TCP_Speed", c_double * 6), # TCP指令速度[x,y,z,rx,ry,rz]
+        ("actual_TCP_CmpSpeed", c_double * 2),  # TCP合成实际速度[位置mm/s,姿态deg/s]
+        ("actual_TCP_Speed", c_double * 6), # TCP实际速度[x,y,z,rx,ry,rz]
+        ("jt_cur_tor", c_double * 6),       # 6个轴当前扭矩，单位N·m
+
+        # 工具和用户坐标系
+        ("tool", c_int),                    # 应用的工具坐标系编号
+        ("user", c_int),                    # 应用的工件坐标系编号
+
+        # 数字IO
+        ("cl_dgt_output_h", c_uint8),       # 控制箱数字量IO输出15-8
+        ("cl_dgt_output_l", c_uint8),       # 控制箱数字量IO输出7-0
+        ("tl_dgt_output_l", c_uint8),       # 工具数字量IO输出7-0，仅bit0-bit1有效
+        ("cl_dgt_input_h", c_uint8),        # 控制箱数字量IO输入15-8
+        ("cl_dgt_input_l", c_uint8),        # 控制箱数字量IO输入7-0
+        ("tl_dgt_input_l", c_uint8),        # 工具数字量IO输入7-0，仅bit0-bit1有效
+
+        # 模拟量IO 
+        ("cl_analog_input", c_uint16 * 2),  # 控制箱模拟量输入[0],[1]
+        ("tl_anglog_input", c_uint16),      # 工具模拟量输入
+
+        # 力矩传感器
+        ("ft_sensor_raw_data", c_double * 6),   # 力矩传感器原始数据
+        ("ft_sensor_data", c_double * 6),      # 力矩传感器数据
+        ("ft_sensor_active", c_uint8),          # 力矩传感器激活状态
+
+        # 状态信号
+        ("EmergencyStop", c_uint8),         # 急停标志，0-急停未按下，1-急停按下
+        ("motion_done", c_int),             # 运动到位信号，1-到位，0-未到位
+        ("gripper_motiondone", c_uint8),    # 夹爪运动完成信号，1-完成，0-未完成
+        ("mc_queue_len", c_int),            # 运动指令队列长度
+        ("collisionState", c_uint8),        # 碰撞检测，1-碰撞，0-无碰撞
+        ("trajectory_pnum", c_int),         # 轨迹点编号
+        ("safety_stop0_state", c_uint8),    # 安全停止信号SI0
+        ("safety_stop1_state", c_uint8),    # 安全停止信号SI1
+
+        # 夹爪信息
+        ("gripper_fault_id", c_uint8),      # 错误夹爪号
+        ("gripper_fault", c_uint16),        # 夹爪故障
+        ("gripper_active", c_uint16),      # 夹爪激活状态
+        ("gripper_position", c_uint8),      # 夹爪位置
+        ("gripper_speed", c_int8),          # 夹爪速度
+        ("gripper_current", c_int8),        # 夹爪电流
+        ("gripper_temp", c_int),            # 夹爪温度
+        ("gripper_voltage", c_int),         # 夹爪电压
+
+        # 扩展轴状态
+        ("aux_axis_state", ROBOT_AUX_STATE * 25),    # 485扩展轴状态 (25个)
+        ("extAxisStatus", EXT_AXIS_STATUS * 4), # UDP扩展轴状态 (4个)
+
+        # 扩展IO状态
+        ("extDIState", c_uint16 * 8),       # 扩展DI输入
+        ("extDOState", c_uint16 * 8),       # 扩展DO输出
+        ("extAIState", c_uint16 * 4),        # 扩展AI输入
+        ("extAOState", c_uint16 * 4),        # 扩展AO输出
+
+        # 机器人和关节状态
+        ("rbtEnableState", c_int),                  # 机器人使能状态
+        ("jointDriverTorque", c_double * 6),        # 机器人关节驱动器扭矩
+        ("jointDriverTemperature", c_double * 6),   # 机器人关节驱动器温度
+
+        # 机器人时间
+        #("robotTime", c_int * 7),             # 机器人系统时间 [year,month,day,hour,min,sec,ms]
         ("year", ctypes.c_uint16),  # 年
         ("mouth", ctypes.c_uint8),  # 月
         ("day", ctypes.c_uint8),  # 日
@@ -123,27 +267,219 @@ class RobotStatePkg(Structure):
         ("minute", ctypes.c_uint8),  # 分
         ("second", ctypes.c_uint8),  # 秒
         ("millisecond", ctypes.c_uint16),  # 毫秒
-        ("softwareUpgradeState", ctypes.c_int),  # 机器人软件升级状态
-        ("endLuaErrCode", ctypes.c_uint16),  # 末端LUA运行状态
-        ("cl_analog_output", ctypes.c_uint16 * 2),  # 控制箱模拟量输出
-        ("tl_analog_output", ctypes.c_uint16),  # 工具模拟量输出
-        ("gripperRotNum", ctypes.c_float),  # 旋转夹爪当前旋转圈数
-        ("gripperRotSpeed", ctypes.c_uint8),  # 旋转夹爪当前旋转速度百分比
-        ("gripperRotTorque", ctypes.c_uint8),  # 旋转夹爪当前旋转力矩百分比
-        ("weldingBreakOffState", WELDING_BREAKOFF_STATE), # 焊接中断状态
-        ("jt_tgt_tor", ctypes.c_double * 6),  # 关节指令力矩
-        ("smartToolState", ctypes.c_int),  # SmartTool手柄按钮状态
-        ("wideVoltageCtrlBoxTemp", ctypes.c_float),  # 宽电压控制箱温度
-        ("wideVoltageCtrlBoxFanCurrent", ctypes.c_uint16),  # 宽电压控制箱风扇电流(ma)
-        ("toolCoord", ctypes.c_double * 6),  # 工具坐标系                                                                2025.09.17---3.8.6
-        ("wobjCoord", ctypes.c_double * 6),  # 工件坐标系
-        ("extoolCoord", ctypes.c_double * 6),  # 外部工具坐标系
-        ("exAxisCoord", ctypes.c_double * 6),  # 扩展轴坐标系
-        ("load", ctypes.c_double),  # 负载质量
-        ("loadCog", ctypes.c_double * 3),  # 负载质心
-        ("lastServoTarget", ctypes.c_double * 6),  # 队列中最后一个ServoJ目标位置                                          2025.10.15---3.8.7
-        ("servoJCmdNum", ctypes.c_int),  # ServoJ指令计数
-        ("check_sum", ctypes.c_uint16)]  # 校验和
+
+        ("softwareUpgradeState", c_int),      # 机器人软件升级状态
+        ("endLuaErrCode", c_uint16),          # 末端LUA运行状态
+
+        # 模拟量输出
+        ("cl_analog_output", c_uint16 * 2), # 控制箱模拟量输出[0],[1]
+        ("tl_analog_output", c_uint16),       # 工具模拟量输出
+
+        # 旋转夹爪
+        ("gripperRotNum", c_float),         # 旋转夹爪当前旋转圈数
+        ("gripperRotSpeed", c_uint8),       # 旋转夹爪当前旋转速度百分比
+        ("gripperRotTorque", c_uint8),      # 旋转夹爪当前旋转力矩百分比
+
+        # 焊接中断状态 - 使用结构体
+        ("weldingBreakOffState", WELDING_BREAKOFF_STATE),  # 焊接中断状态
+
+        # 目标关节扭矩
+        ("jt_tgt_tor", c_double * 6),       # 关节指令力矩
+
+        ("smartToolState", c_int),          # SmartTool手柄按钮状态
+        ("wideVoltageCtrlBoxTemp", c_float),        # 宽电压控制箱温度
+        ("wideVoltageCtrlBoxFanCurrent", c_uint16), # 宽电压控制箱风扇电流(mA)
+
+        # 坐标系数值
+        ("toolCoord", c_double * 6),        # 当前工具坐标系数值；x,y,z,rx,ry,rz
+        ("wobjCoord", c_double * 6),        # 当前工件坐标系数值；x,y,z,rx,ry,rz
+        ("extoolCoord", c_double * 6),      # 当前外部工具坐标系数值；x,y,z,rx,ry,rz
+        ("exAxisCoord", c_double * 6),      # 当前扩展轴坐标系数值；x,y,z,rx,ry,rz
+
+        # 负载
+        ("load", c_double),                 # 负载质量
+        ("loadCog", c_double * 3),            # 负载质心
+
+        # 伺服指令
+        ("lastServoTarget", c_double * 6),  # 队列中最后一个ServoJ目标位置
+        ("servoJCmdNum", c_int),            # servoJ指令计数
+
+        # 目标关节数据
+        ("targetJointPos", c_double * 6),   # 6个关节指令位置，单位°
+        ("targetJointVel", c_double * 6),   # 6个关节指令速度，单位°/s
+        ("targetJointAcc", c_double * 6),   # 6个关节指令加速度，单位°/s2
+        ("targetJointCurrent", c_double * 6), # 6个关节指令电流，单位A
+        ("actualJointCurrent", c_double * 6), # 6个关节当前电流，单位A
+        ("actualTCPForce", c_double * 6),   # 机器人末端力矩Nm；x,y,z,rx,ry,rz
+        ("targetTCPPos", c_double * 6),     # 机器人TCP指令位置mm；x,y,z,rx,ry,rz
+
+        ("collisionLevel", c_uint8 * 6),    # 机器人碰撞等级
+        ("speedScaleManual", c_double),     # 手动模式全局速度百分比
+        ("speedScaleAuto", c_double),       # 自动模式全局速度百分比
+        ("luaLineNum", c_int),              # 当前lua程序运行行号
+        ("abnomalStop", c_uint8),           # 0-无异常；1-有异常
+        ("currentLuaFileName", c_uint8 * 256),  # 当前运行lua程序名称
+        ("programTotalLine", c_uint8),      # lua程序总行数
+        ("safetyBoxSingal", c_uint8 * 6),   # 机器人按钮盒按钮状态
+
+        # 焊接数据
+        ("weldVoltage", c_double),          # 焊接电压 V
+        ("weldCurrent", c_double),          # 焊接电流
+        ("weldTrackVel", c_double),         # 焊缝跟踪速度 mm/s
+
+        ("tpdException", c_uint8),            # TPD轨迹加载数量超限，0-未超限，1-超限
+        ("alarmRebootRobot", c_uint8),      # 警告，1-松开急停按钮请断电重启控制箱，2-关节通讯异常请断电重启控制箱
+        ("modbusMasterConnect", c_uint8),   # bit0-bit7位对应ModbusTCP的0-7主站连接状态
+        ("modbusSlaveConnect", c_uint8),    # ModbusTCP从站连接状态
+        ("btnBoxStopSignal", c_uint8),      # 按钮盒急停信号
+        ("dragAlarm", c_uint8),             # 拖动警告
+        ("safetyDoorAlarm", c_uint8),       # 安全门警告
+        ("safetyPlaneAlarm", c_uint8),      # 进入安全墙警告
+        ("motonAlarm", c_uint8),            # 运动警告
+        ("interfaceAlarm", c_uint8),        # 进入干涉区警告
+        ("udpCmdState", c_int),             # 20007端口UDP通讯连接状态
+        ("weldReadyState", c_uint8),        # 焊机准备完成状态
+        ("alarmCheckEmergStopBtn", c_uint8),    # 0-正常；1-通信异常，检查急停按钮是否松开
+        ("tsTmCmdComError", c_uint8),       # 0-正常；1-扭矩指令通讯失败
+        ("tsTmStateComError", c_uint8),     # 0-正常；1-扭矩状态通讯失败
+        ("ctrlBoxError", c_int),            # 控制箱错误
+        ("safetyDataState", c_uint8),       # 安全数据状态标志
+        ("forceSensorErrState", c_uint8),   # 力传感器连接超时故障
+        ("ctrlOpenLuaErrCode", c_uint8 * 4),  # 4个控制器外设协议错误码
+        ("strangePosFlag", c_uint8),        # 当前处于奇异位姿标志
+        ("alarm", c_uint8),                 # 警告
+        ("driverAlarm", c_uint8),           # 驱动器报警轴号
+        ("aliveSlaveNumError", c_uint8),    # 活动从站数量错误
+        ("slaveComError", c_uint8 * 8),     # 从站错误状态
+        ("cmdPointError", c_uint8),         # 指令点错误
+        ("IOError", c_uint8),               # IO错误
+        ("gripperError", c_uint8),          # 夹爪错误
+        ("fileError", c_uint8),             # 文件错误
+        ("paraError", c_uint8),             # 参数错误
+        ("exaxisOutLimitError", c_uint8),   # 外部轴超出软限位错误
+        ("driverComError", c_uint8 * 6),    # 与驱动器通信故障
+        ("driverError", c_uint8),           # 驱动器通信故障轴号
+        ("outSoftLimitError", c_uint8),     # 超出软限位故障
+        ("axleGenComData", c_uint8 * 130),   # 轴通用通讯非周期数据
+        ("socketConnTimeout", c_uint8),     # socket连接超时
+        ("socketReadTimeout", c_uint8),     # socket读取超时
+        ("tsWebStateComErr", c_uint8),      # TS_WEB状态通讯错误
+        ("check_sum", c_uint16)          # 和校验
+    ]
+
+    # 兼容属性映射 
+    _COMPAT_FIELDS = {
+        # 关节和TCP位置/速度/加速度
+        'actual_joint_pos': 'jt_cur_pos',
+        'actual_TCP_pos': 'tl_cur_pos',
+        'actual_flange_pos': 'flange_cur_pos',
+        'actual_joint_vel': 'actual_qd',
+        'actual_joint_acc': 'actual_qdd',
+        'target_TCP_cmpvel': 'target_TCP_CmpSpeed',
+        'target_TCP_vel': 'target_TCP_Speed',
+        'actual_TCP_cmpvel': 'actual_TCP_CmpSpeed',
+        'actual_TCP_vel': 'actual_TCP_Speed',
+        'actual_joint_torque': 'jt_cur_tor',
+        # 工具和用户
+        'tool_id': 'tool',
+        'wobj_id': 'user',
+        # IO
+        'cfg_DO_box': 'cl_dgt_output_h',
+        'std_DO_box': 'cl_dgt_output_l',
+        'cfg_DO_tool': 'tl_dgt_output_l',
+        'cfg_DI_box': 'cl_dgt_input_h',
+        'std_DI_box': 'cl_dgt_input_l',
+        'cfg_DI_tool': 'tl_dgt_input_l',
+        # 模拟量输入/输出（数组访问通过索引）
+        'std_AI0_box': 'cl_analog_input',
+        'std_AI1_box': 'cl_analog_input',
+        'std_AI_tool': 'tl_anglog_input',
+        'std_AO0_box': 'cl_analog_output',
+        'std_AO1_box': 'cl_analog_output',
+        'std_AO_tool': 'tl_analog_output',
+        # 状态信号
+        'emergency_stop': 'EmergencyStop',
+        'gripper_motion_done': 'gripper_motiondone',
+        'motion_queue_len': 'mc_queue_len',
+        'collision_state': 'collisionState',
+        # 扩展轴和IO
+        'aux_axis_state': 'aux_axis_state',
+        'exaxis_status': 'extAxisStatus',
+        'ext_DI_state': 'extDIState',
+        'ext_DO_state': 'extDOState',
+        'ext_AI_state': 'extAIState',
+        'ext_AO_state': 'extAOState',
+        'rbt_enable_state': 'rbtEnableState',
+        # 关节驱动器
+        'joint_driver_torque': 'jointDriverTorque',
+        'actual_joint_temp': 'jointDriverTemperature',
+        'robot_time': 'robotTime',
+        # 旋转夹爪
+        'rotating_gripper_num': 'gripperRotNum',
+        'rotating_gripper_speed': 'gripperRotSpeed',
+        'rotating_gripper_tor': 'gripperRotTorque',
+        # 焊接中断状态
+        'weld_break_off_state': 'weldingBreakOffState',
+        'weld_arc_state': 'weldingBreakOffState',
+        # 其他
+        'target_joint_torque': 'jt_tgt_tor',
+        'smarttool_state': 'smartToolState',
+        'tool_coord': 'toolCoord',
+        'wobj_coord': 'wobjCoord',
+        'exTool_coord': 'extoolCoord',
+        'exAxis_coord': 'exAxisCoord',
+        'payload': 'load',
+        'pay_cog': 'loadCog',
+        'last_servoJ_target': 'lastServoTarget',
+        'servoJ_cmd_num': 'servoJCmdNum',
+        'strange_pos_flag': 'strangePosFlag',
+        'dr_alarm': 'driverAlarm',
+        'socket_conn_timeout': 'socketConnTimeout',
+        'socket_read_timeout': 'socketReadTimeout',
+        'ts_web_state_com_err': 'tsWebStateComErr',
+    }
+
+    def __getattr__(self, name):
+        """支持旧字段名访问"""
+        if name in self._COMPAT_FIELDS:
+            real_name = self._COMPAT_FIELDS[name]
+            # 处理数组索引（如 std_AI0_box -> cl_analog_input[0]）
+            if name == 'std_AI0_box':
+                return getattr(self, real_name)[0]
+            elif name == 'std_AI1_box':
+                return getattr(self, real_name)[1]
+            elif name == 'std_AO0_box':
+                return getattr(self, real_name)[0]
+            elif name == 'std_AO1_box':
+                return getattr(self, real_name)[1]
+            elif name == 'weld_break_off_state':
+                return getattr(self, real_name).breakOffState
+            elif name == 'weld_arc_state':
+                return getattr(self, real_name).weldArcState
+            return getattr(self, real_name)
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+
+    def __setattr__(self, name, value):
+        """支持旧字段名设置"""
+        if name in self._COMPAT_FIELDS:
+            real_name = self._COMPAT_FIELDS[name]
+            # 处理数组索引
+            if name == 'std_AI0_box':
+                getattr(self, real_name)[0] = value
+            elif name == 'std_AI1_box':
+                getattr(self, real_name)[1] = value
+            elif name == 'std_AO0_box':
+                getattr(self, real_name)[0] = value
+            elif name == 'std_AO1_box':
+                getattr(self, real_name)[1] = value
+            elif name == 'weld_break_off_state':
+                getattr(self, real_name).breakOffState = value
+            elif name == 'weld_arc_state':
+                getattr(self, real_name).weldArcState = value
+            else:
+                super().__setattr__(real_name, value)
+        else:
+            super().__setattr__(name, value)
 
 
 class BufferedFileHandler(RotatingFileHandler):
@@ -205,13 +541,11 @@ def xmlrpc_timeout(func):
 
 class RobotError:
     ERR_SUCCESS = 0
-    ERR_POINTTABLE_NOTFOUND = -7  # 上传文件不存在
-    # ERR_SAVE_FILE_PATH_NOT_FOUND = -6  # 保存文件路径不存在
-    ERR_NOT_FOUND_LUA_FILE = -5  # lua文件不存在
-    ERR_RPC_ERROR = -4
-    ERR_SOCKET_COM_FAILED = -2
-    ERR_OTHER = -1
-    ERROR_RECONN = -8
+
+    ERR_TOO_MANY_STATES = -20                   #配置状态字段长度超限
+    ERR_NEED_AT_LEAST_ONE_STATE = -19           #至少需要配置一个状态字段
+    ERR_STATE_INVALID = -18                     #状态字段不存在
+    ERR_STATE_ALREADY_EXISTS = -17              #状态字段重复配置
     ERR_SOCKET_RECV_FAILED=-16    #/* socket接收失败 */
     ERR_SOCKET_SEND_FAILED=-15    #/* socket发送失败 */
     ERR_FILE_OPEN_FAILED=-14    #/* 文件打开失败 */
@@ -223,6 +557,11 @@ class RobotError:
     ERR_DOWN_LOAD_FILE_FAILED=-8     #/* 文件下载失败 */
     ERR_UPLOAD_FILE_NOT_FOUND=-7     #/* 上传文件存在 */
     ERR_SAVE_FILE_PATH_NOT_FOUND=-6     #/* 保存文件路径不存在 */
+    ERR_NOT_FOUND_LUA_FILE = -5  # lua文件不存在
+    ERR_RPC_ERROR = -4
+    ERR_XMLRPC_COM_FAILED = -3
+    ERR_SOCKET_COM_FAILED = -2
+    ERR_OTHER = -1
     ERR_PARAM_VALUE=4                 #/* 参数值不在合理范围内 */
 
 @dataclass
@@ -610,6 +949,1323 @@ class FrUdpClient:
         self.close()
 
 
+# ==================== RobotState 枚举 ====================
+class RobotState(enum.Enum):
+    """CNDE状态类型枚举"""
+    FrameHead = 0
+    FrameCnt = 1
+    DataLen = 2
+    ProgramState = 3
+    RobotState = 4
+    MainCode = 5
+    SubCode = 6
+    RobotMode = 7
+    JointCurPos = 8
+    ToolCurPos = 9
+    FlangeCurPos = 10
+    ActualJointVel = 11
+    ActualJointAcc = 12
+    TargetTCPCmpSpeed = 13
+    TargetTCPSpeed = 14
+    ActualTCPCmpSpeed = 15
+    ActualTCPSpeed = 16
+    ActualJointTorque = 17
+    Tool = 18
+    User = 19
+    ClDgtOutputH = 20
+    ClDgtOutputL = 21
+    TlDgtOutputL = 22
+    ClDgtInputH = 23
+    ClDgtInputL = 24
+    TlDgtInputL = 25
+    ClAnalogInput = 26
+    TlAnglogInput = 27
+    FtSensorRawData = 28
+    FtSensorData = 29
+    FtSensorActive = 30
+    EmergencyStop = 31
+    MotionDone = 32
+    GripperMotiondone = 33
+    McQueueLen = 34
+    CollisionState = 35
+    TrajectoryPnum = 36
+    SafetyStop0State = 37
+    SafetyStop1State = 38
+    GripperFaultId = 39
+    GripperFault = 40
+    GripperActive = 41
+    GripperPosition = 42
+    GripperSpeed = 43
+    GripperCurrent = 44
+    GripperTemp = 45
+    GripperVoltage = 46
+    AuxState = 47
+    ExtAxisStatus = 48
+    ExtDIState = 49
+    ExtDOState = 50
+    ExtAIState = 51
+    ExtAOState = 52
+    RbtEnableState = 53
+    JointDriverTorque = 54
+    JointDriverTemperature = 55
+    RobotTime = 56
+    SoftwareUpgradeState = 57
+    EndLuaErrCode = 58
+    ClAnalogOutput = 59
+    TlAnalogOutput = 60
+    GripperRotNum = 61
+    GripperRotSpeed = 62
+    GripperRotTorque = 63
+    WeldingBreakOffState = 64
+    TargetJointTorque = 65
+    SmartToolState = 66
+    WideVoltageCtrlBoxTemp = 67
+    WideVoltageCtrlBoxFanCurrent = 68
+    ToolCoord = 69
+    WobjCoord = 70
+    ExtoolCoord = 71
+    ExAxisCoord = 72
+    Load = 73
+    LoadCog = 74
+    LastServoTarget = 75
+    ServoJCmdNum = 76
+    TargetJointPos = 77
+    TargetJointVel = 78
+    TargetJointAcc = 79
+    TargetJointCurrent = 80
+    ActualJointCurrent = 81
+    ActualTCPForce = 82
+    TargetTCPPos = 83
+    CollisionLevel = 84
+    SpeedScaleManual = 85
+    SpeedScaleAuto = 86
+    LuaLineNum = 87
+    AbnomalStop = 88
+    CurrentLuaFileName = 89
+    ProgramTotalLine = 90
+    SafetyBoxSingal = 91
+    WeldVoltage = 92
+    WeldCurrent = 93
+    WeldTrackVel = 94
+    TpdException = 95
+    AlarmRebootRobot = 96
+    ModbusMasterConnect = 97
+    ModbusSlaveConnect = 98
+    BtnBoxStopSignal = 99
+    DragAlarm = 100
+    SafetyDoorAlarm = 101
+    SafetyPlaneAlarm = 102
+    MotonAlarm = 103
+    InterfaceAlarm = 104
+    UdpCmdState = 105
+    WeldReadyState = 106
+    AlarmCheckEmergStopBtn = 107
+    TsTmCmdComError = 108
+    TsTmStateComError = 109
+    CtrlBoxError = 110
+    SafetyDataState = 111
+    ForceSensorErrState = 112
+    CtrlOpenLuaErrCode = 113
+    StrangePosFlag = 114
+    Alarm = 115
+    DriverAlarm = 116
+    AliveSlaveNumError = 117
+    SlaveComError = 118
+    CmdPointError = 119
+    IOError = 120
+    GripperError = 121
+    FileError = 122
+    ParaError = 123
+    ExaxisOutLimitError = 124
+    DriverComError = 125
+    DriverError = 126
+    OutSoftLimitError = 127
+    AxleGenComData = 128
+    SocketConnTimeout = 129
+    SocketReadTimeout = 130
+    TsWebStateComErr = 131
+    CheckSum = 132
+
+
+# ==================== CNDE状态映射表 ====================
+CNDE_STATE_CONFIG = {
+    RobotState.FrameHead: ("frame_head", "frame_head", "UINT16", "UINT16"),
+    RobotState.FrameCnt: ("frame_cnt", "frame_cnt", "UINT8", "UINT8"),
+    RobotState.DataLen: ("data_len", "data_len", "UINT16", "UINT16"),
+    RobotState.ProgramState: ("program_state", "program_state", "UINT8", "UINT8"),
+    RobotState.RobotState: ("robot_state", "robot_state", "UINT8", "UINT8"),
+    RobotState.MainCode: ("main_code", "main_code", "INT32", "INT32"),
+    RobotState.SubCode: ("sub_code", "sub_code", "INT32", "INT32"),
+    RobotState.RobotMode: ("robot_mode", "robot_mode", "UINT8", "UINT8"),
+    RobotState.JointCurPos: ("actual_joint_pos", "jt_cur_pos", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ToolCurPos: ("actual_TCP_pos", "tl_cur_pos", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.FlangeCurPos: ("actual_flange_pos", "flange_cur_pos", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualJointVel: ("actual_joint_vel", "actual_qd", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualJointAcc: ("actual_joint_acc", "actual_qdd", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.TargetTCPCmpSpeed: ("target_TCP_cmpvel", "target_TCP_CmpSpeed", "DOUBLE_2", "DOUBLE_2"),
+    RobotState.TargetTCPSpeed: ("target_TCP_vel", "target_TCP_Speed", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualTCPCmpSpeed: ("actual_TCP_cmpvel", "actual_TCP_CmpSpeed", "DOUBLE_2", "DOUBLE_2"),
+    RobotState.ActualTCPSpeed: ("actual_TCP_vel", "actual_TCP_Speed", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualJointTorque: ("actual_joint_torque", "jt_cur_tor", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.Tool: ("tool_id", "tool", "INT32", "INT32"),
+    RobotState.User: ("wobj_id", "user", "INT32", "INT32"),
+    RobotState.ClDgtOutputH: ("cfg_DO_box", "cl_dgt_output_h", "UINT8", "UINT8"),
+    RobotState.ClDgtOutputL: ("std_DO_box", "cl_dgt_output_l", "UINT8", "UINT8"),
+    RobotState.TlDgtOutputL: ("cfg_DO_tool", "tl_dgt_output_l", "UINT8", "UINT8"),
+    RobotState.ClDgtInputH: ("cfg_DI_box", "cl_dgt_input_h", "UINT8", "UINT8"),
+    RobotState.ClDgtInputL: ("std_DI_box", "cl_dgt_input_l", "UINT8", "UINT8"),
+    RobotState.TlDgtInputL: ("cfg_DI_tool", "tl_dgt_input_l", "UINT8", "UINT8"),
+    RobotState.ClAnalogInput: ("std_AI0_box,std_AI1_box", "cl_analog_input", "UINT16_2", "DOUBLE,DOUBLE"),
+    RobotState.TlAnglogInput: ("std_AI_tool", "tl_anglog_input", "UINT16", "DOUBLE"),
+    RobotState.FtSensorRawData: ("ft_sensor_raw_data", "ft_sensor_raw_data", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.FtSensorData: ("ft_sensor_data", "ft_sensor_data", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.FtSensorActive: ("ft_sensor_active", "ft_sensor_active", "UINT8", "UINT8"),
+    RobotState.EmergencyStop: ("emergency_stop", "EmergencyStop", "UINT8", "UINT8"),
+    RobotState.MotionDone: ("motion_done", "motion_done", "INT32", "INT32"),
+    RobotState.GripperMotiondone: ("gripper_motion_done", "gripper_motiondone", "UINT8", "UINT8"),
+    RobotState.McQueueLen: ("motion_queue_len", "mc_queue_len", "INT32", "INT32"),
+    RobotState.CollisionState: ("collision_state", "collisionState", "UINT8", "UINT8"),
+    RobotState.TrajectoryPnum: ("trajectory_pnum", "trajectory_pnum", "INT32", "INT32"),
+    RobotState.SafetyStop0State: ("safety_stop0_state", "safety_stop0_state", "UINT8", "UINT8"),
+    RobotState.SafetyStop1State: ("safety_stop1_state", "safety_stop1_state", "UINT8", "UINT8"),
+    RobotState.GripperFaultId: ("gripper_fault_id", "gripper_fault_id", "UINT8", "UINT8"),
+    RobotState.GripperFault: ("gripper_fault", "gripper_fault", "UINT16", "INT32"),
+    RobotState.GripperActive: ("gripper_active", "gripper_active", "UINT16", "INT32"),
+    RobotState.GripperPosition: ("gripper_position", "gripper_position", "UINT8", "UINT8"),
+    RobotState.GripperSpeed: ("gripper_speed", "gripper_speed", "INT8", "INT32"),
+    RobotState.GripperCurrent: ("gripper_current", "gripper_current", "INT8", "INT32"),
+    RobotState.GripperTemp: ("gripper_temp", "gripper_temp", "INT32", "INT32"),
+    RobotState.GripperVoltage: ("gripper_voltage", "gripper_voltage", "INT32", "INT32"),
+    RobotState.AuxState: ("aux_axis_state", "aux_axis_state", "UINT8_25", "UINT8_25"),
+    RobotState.ExtAxisStatus: ("exaxis_status", "extAxisStatus", "UINT8_116", "UINT8_116"),
+    RobotState.ExtDIState: ("ext_DI_state", "extDIState", "UINT16_8", "UINT8_16"),
+    RobotState.ExtDOState: ("ext_DO_state", "extDOState", "UINT16_8", "UINT8_16"),
+    RobotState.ExtAIState: ("ext_AI_state", "extAIState", "UINT16_4", "INT32_4"),
+    RobotState.ExtAOState: ("ext_AO_state", "extAOState", "UINT16_4", "INT32_4"),
+    RobotState.RbtEnableState: ("rbt_enable_state", "rbtEnableState", "INT32", "INT32"),
+    RobotState.JointDriverTorque: ("joint_driver_torque", "jointDriverTorque", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.JointDriverTemperature: ("actual_joint_temp", "jointDriverTemperature", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.RobotTime: ("robot_time", "year,mouth,day,hour,minute,second,millisecond", "UINT16,UINT8,UINT8,UINT8,UINT8,UINT8,UINT16", "INT32_7"),
+    RobotState.SoftwareUpgradeState: ("software_upgrade_state", "softwareUpgradeState", "INT32", "INT32"),
+    RobotState.EndLuaErrCode: ("end_lua_err_code", "endLuaErrCode", "UINT16", "INT32"),
+    RobotState.ClAnalogOutput: ("std_AO0_box,std_AO1_box", "cl_analog_output", "UINT16_2", "DOUBLE,DOUBLE"),
+    RobotState.TlAnalogOutput: ("std_AO_tool", "tl_analog_output", "UINT16", "DOUBLE"),
+    RobotState.GripperRotNum: ("rotating_gripper_num", "gripperRotNum", "FLOAT", "DOUBLE"),
+    RobotState.GripperRotSpeed: ("rotating_gripper_speed", "gripperRotSpeed", "UINT8", "UINT8"),
+    RobotState.GripperRotTorque: ("rotating_gripper_tor", "gripperRotTorque", "UINT8", "UINT8"),
+    RobotState.WeldingBreakOffState: ("weld_break_off_state,weld_arc_state", "weldingBreakOffState", "STRUCT", "UINT8,UINT8"),
+    RobotState.TargetJointTorque: ("target_joint_torque", "jt_tgt_tor", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.SmartToolState: ("smarttool_state", "smartToolState", "INT32", "UINT32"),
+    RobotState.WideVoltageCtrlBoxTemp: ("wide_voltage_ctrl_box_temp", "wideVoltageCtrlBoxTemp", "FLOAT", "DOUBLE"),
+    RobotState.WideVoltageCtrlBoxFanCurrent: ("wide_voltage_ctrl_box_fan_current", "wideVoltageCtrlBoxFanCurrent", "UINT16", "INT32"),
+    RobotState.ToolCoord: ("tool_coord", "toolCoord", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.WobjCoord: ("wobj_coord", "wobjCoord", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ExtoolCoord: ("exTool_coord", "extoolCoord", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ExAxisCoord: ("exAxis_coord", "exAxisCoord", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.Load: ("payload", "load", "DOUBLE", "DOUBLE"),
+    RobotState.LoadCog: ("pay_cog", "loadCog", "DOUBLE_3", "DOUBLE_3"),
+    RobotState.LastServoTarget: ("last_servoJ_target", "lastServoTarget", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ServoJCmdNum: ("servoJ_cmd_num", "servoJCmdNum", "INT32", "INT32"),
+    RobotState.TargetJointPos: ("target_joint_pos", "targetJointPos", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.TargetJointVel: ("target_joint_vel", "targetJointVel", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.TargetJointAcc: ("target_joint_acc", "targetJointAcc", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.TargetJointCurrent: ("target_joint_current", "targetJointCurrent", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualJointCurrent: ("actual_joint_current", "actualJointCurrent", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.ActualTCPForce: ("actual_TCP_force", "actualTCPForce", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.TargetTCPPos: ("target_TCP_pos", "targetTCPPos", "DOUBLE_6", "DOUBLE_6"),
+    RobotState.CollisionLevel: ("collision_level", "collisionLevel", "UINT8_6", "UINT8_6"),
+    RobotState.SpeedScaleManual: ("speed_scaling_man", "speedScaleManual", "DOUBLE", "DOUBLE"),
+    RobotState.SpeedScaleAuto: ("speed_scaling_auto", "speedScaleAuto", "DOUBLE", "DOUBLE"),
+    RobotState.LuaLineNum: ("line_number", "luaLineNum", "INT32", "INT32"),
+    RobotState.AbnomalStop: ("abnormal_stop", "abnomalStop", "UINT8", "UINT8"),
+    RobotState.CurrentLuaFileName: ("cur_lua_file_name", "currentLuaFileName", "UINT8_256", "UINT8_256"),
+    RobotState.ProgramTotalLine: ("prog_total_line", "programTotalLine", "UINT8", "UINT8"),
+    RobotState.SafetyBoxSingal: ("safety_box_signal", "safetyBoxSingal", "UINT8_6", "UINT8_6"),
+    RobotState.WeldVoltage: ("welding_voltage", "weldVoltage", "DOUBLE", "DOUBLE"),
+    RobotState.WeldCurrent: ("welding_current", "weldCurrent", "DOUBLE", "DOUBLE"),
+    RobotState.WeldTrackVel: ("welding_track_speed", "weldTrackVel", "DOUBLE", "DOUBLE"),
+    RobotState.TpdException: ("tpd_exception", "tpdException", "UINT8", "UINT8"),
+    RobotState.AlarmRebootRobot: ("alarm_reboot_robot", "alarmRebootRobot", "UINT8", "UINT8"),
+    RobotState.ModbusMasterConnect: ("modbus_master_connect", "modbusMasterConnect", "UINT8", "UINT8"),
+    RobotState.ModbusSlaveConnect: ("modbus_slave_connect", "modbusSlaveConnect", "UINT8", "UINT8"),
+    RobotState.BtnBoxStopSignal: ("btn_box_stop_signal", "btnBoxStopSignal", "UINT8", "UINT8"),
+    RobotState.DragAlarm: ("drag_alarm", "dragAlarm", "UINT8", "UINT8"),
+    RobotState.SafetyDoorAlarm: ("safety_door_alarm", "safetyDoorAlarm", "UINT8", "UINT8"),
+    RobotState.SafetyPlaneAlarm: ("safety_plane_alarm", "safetyPlaneAlarm", "UINT8", "UINT8"),
+    RobotState.MotonAlarm: ("motion_alarm", "motonAlarm", "UINT8", "UINT8"),
+    RobotState.InterfaceAlarm: ("interfere_alarm", "interfaceAlarm", "UINT8", "UINT8"),
+    RobotState.UdpCmdState: ("udp_cmd_state", "udpCmdState", "INT32", "INT32"),
+    RobotState.WeldReadyState: ("weld_ready_state", "weldReadyState", "UINT8", "UINT8"),
+    RobotState.AlarmCheckEmergStopBtn: ("alarm_check_emerg_stop_btn", "alarmCheckEmergStopBtn", "UINT8", "UINT8"),
+    RobotState.TsTmCmdComError: ("ts_tm_cmd_com_error", "tsTmCmdComError", "UINT8", "UINT8"),
+    RobotState.TsTmStateComError: ("ts_tm_state_com_error", "tsTmStateComError", "UINT8", "UINT8"),
+    RobotState.CtrlBoxError: ("ctrl_box_error", "ctrlBoxError", "INT32", "INT32"),
+    RobotState.SafetyDataState: ("safety_data_state", "safetyDataState", "UINT8", "UINT8"),
+    RobotState.ForceSensorErrState: ("force_sensor_err_state", "forceSensorErrState", "UINT8", "UINT8"),
+    RobotState.CtrlOpenLuaErrCode: ("ctrl_open_lua_errcode", "ctrlOpenLuaErrCode", "UINT8_4", "UINT8_4"),
+    RobotState.StrangePosFlag: ("strange_pos_flag", "strangePosFlag", "UINT8", "UINT8"),
+    RobotState.Alarm: ("alarm", "alarm", "UINT8", "UINT8"),
+    RobotState.DriverAlarm: ("dr_alarm", "driverAlarm", "UINT8", "UINT8"),
+    RobotState.SocketConnTimeout: ("socket_conn_timeout", "socketConnTimeout", "UINT8", "UINT8"),
+    RobotState.SocketReadTimeout: ("socket_read_timeout", "socketReadTimeout", "UINT8", "UINT8"),
+    RobotState.TsWebStateComErr: ("ts_web_state_com_err", "tsWebStateComErr", "UINT8", "UINT8"),
+    RobotState.AliveSlaveNumError: ("alive_slave_num_error", "aliveSlaveNumError", "UINT8", "UINT8"),
+    RobotState.SlaveComError: ("slave_com_error", "slaveComError", "UINT8_8", "UINT8_8"),
+    RobotState.CmdPointError: ("cmd_point_error", "cmdPointError", "UINT8", "UINT8"),
+    RobotState.IOError: ("IO_error", "IOError", "UINT8", "UINT8"),
+    RobotState.GripperError: ("gripper_error", "gripperError", "UINT8", "UINT8"),
+    RobotState.FileError: ("file_error", "fileError", "UINT8", "UINT8"),
+    RobotState.ParaError: ("para_error", "paraError", "UINT8", "UINT8"),
+    RobotState.ExaxisOutLimitError: ("exaxis_out_slimit_error", "exaxisOutLimitError", "UINT8", "UINT8"),
+    RobotState.DriverComError: ("dr_com_err", "driverComError", "UINT8_6", "UINT8_6"),
+    RobotState.DriverError: ("dr_err", "driverError", "UINT8", "UINT8"),
+    RobotState.OutSoftLimitError: ("out_sflimit_err", "outSoftLimitError", "UINT8", "UINT8"),
+    RobotState.AxleGenComData: ("axle_gen_com_data", "axleGenComData", "UINT8_130", "UINT8_130"),
+    RobotState.CheckSum: ("check_sum", "check_sum", "UINT16", "UINT16"),
+}
+
+
+# ==================== 默认CNDE配置（只包含到LastServoTarget的状态） ====================
+DEFAULT_CNDE_STATES = [
+    RobotState.ProgramState,
+    RobotState.RobotState,
+    RobotState.MainCode,
+    RobotState.SubCode,
+    RobotState.RobotMode,
+    RobotState.JointCurPos,
+    RobotState.ToolCurPos,
+    RobotState.FlangeCurPos,
+    RobotState.ActualJointVel,
+    RobotState.ActualJointAcc,
+    RobotState.TargetTCPCmpSpeed,
+    RobotState.TargetTCPSpeed,
+    RobotState.ActualTCPCmpSpeed,
+    RobotState.ActualTCPSpeed,
+    RobotState.ActualJointTorque,
+    RobotState.Tool,
+    RobotState.User,
+    RobotState.ClDgtOutputH,
+    RobotState.ClDgtOutputL,
+    RobotState.TlDgtOutputL,
+    RobotState.ClDgtInputH,
+    RobotState.ClDgtInputL,
+    RobotState.TlDgtInputL,
+    RobotState.ClAnalogInput,
+    RobotState.TlAnglogInput,
+    RobotState.FtSensorRawData,
+    RobotState.FtSensorData,
+    RobotState.FtSensorActive,
+    RobotState.EmergencyStop,
+    RobotState.MotionDone,
+    RobotState.GripperMotiondone,
+    RobotState.McQueueLen,
+    RobotState.CollisionState,
+    RobotState.TrajectoryPnum,
+    RobotState.SafetyStop0State,
+    RobotState.SafetyStop1State,
+    RobotState.GripperFaultId,
+    RobotState.GripperFault,
+    RobotState.GripperActive,
+    RobotState.GripperPosition,
+    RobotState.GripperSpeed,
+    RobotState.GripperCurrent,
+    RobotState.GripperTemp,
+    RobotState.GripperVoltage,
+    RobotState.AuxState,
+    RobotState.ExtAxisStatus,
+    RobotState.ExtDIState,
+    RobotState.ExtDOState,
+    RobotState.ExtAIState,
+    RobotState.ExtAOState,
+    RobotState.RbtEnableState,
+    RobotState.JointDriverTorque,
+    RobotState.JointDriverTemperature,
+    RobotState.RobotTime,
+    RobotState.SoftwareUpgradeState,
+    RobotState.EndLuaErrCode,
+    RobotState.ClAnalogOutput,
+    RobotState.TlAnalogOutput,
+    RobotState.GripperRotNum,
+    RobotState.GripperRotSpeed,
+    RobotState.GripperRotTorque,
+    RobotState.WeldingBreakOffState,
+    RobotState.TargetJointTorque,
+    RobotState.SmartToolState,
+    RobotState.WideVoltageCtrlBoxTemp,
+    RobotState.WideVoltageCtrlBoxFanCurrent,
+    RobotState.ToolCoord,
+    RobotState.WobjCoord,
+    RobotState.ExtoolCoord,
+    RobotState.ExAxisCoord,
+    RobotState.Load,
+    RobotState.LoadCog,
+    RobotState.LastServoTarget,
+]
+
+
+# 默认CNDE数据周期(ms)，可通过SetRobotRealtimeStateConfig修改
+DEFAULT_CNDE_PERIOD = 8
+
+# IP-specific配置存储 {ip: [RobotState列表]}
+_ip_states: Dict[str, List[RobotState]] = {}
+
+
+def SetRobotRealtimeStateConfig(states: List[RobotState], period: int = 500) -> int:
+    """
+    设置CNDE默认配置（在RPC连接前调用）
+    
+    使用示例:
+        from fairino import Robot
+        from fairino.Robot import RobotState, SetRobotRealtimeStateConfig
+        
+        # 设置自定义配置
+        SetRobotRealtimeStateConfig([
+            RobotState.ProgramState,
+            RobotState.RobotState,
+            RobotState.JointCurPos,
+        ], 100)
+        
+        # 创建RPC连接，自动使用上面的配置
+        robot = Robot.RPC('192.168.58.2')
+    
+    Args:
+        states: RobotState枚举列表
+        period: 数据周期(ms)，范围8-1000，默认8ms
+    
+    Returns:
+        0-成功，其他-错误码
+    """
+    global DEFAULT_CNDE_STATES, DEFAULT_CNDE_PERIOD
+    
+    if not states:
+        print("错误：至少需要一个状态")
+        return RobotError.ERR_NEED_AT_LEAST_ONE_STATE
+    if period < 8 or period > 1000:
+        print("错误：周期必须在8-1000ms之间")
+        return RobotError.ERR_PARAM_VALUE
+    
+    DEFAULT_CNDE_STATES = states.copy()
+    DEFAULT_CNDE_PERIOD = period
+    print(f"CNDE默认配置已设置: {len(states)} 个状态, {period}ms 周期")
+    return 0
+
+
+def AddRobotRealtimeState(states: List[RobotState], ip: str = None) -> int:
+    """
+    在配置基础上添加CNDE状态列表（支持动态维护和IP隔离）
+
+    使用示例:
+        from fairino import Robot
+        from fairino.Robot import RobotState, AddRobotRealtimeState
+
+        # 【全局配置】在默认配置基础上添加
+        AddRobotRealtimeState([
+            RobotState.FtSensorData,
+            RobotState.GripperPosition,
+        ])
+
+        # 【IP隔离】为特定机器人添加状态
+        AddRobotRealtimeState([RobotState.ServoJCmdNum], ip='192.168.58.2')
+
+        # 创建RPC连接，各自使用对应配置
+        robot1 = Robot.RPC('192.168.58.2')  # 默认+ServoJCmdNum
+        robot2 = Robot.RPC('192.168.58.3')  # 仅默认配置
+
+    Args:
+        states: RobotState枚举列表，要添加的状态
+        ip: 可选，指定机器人IP（用于多机器人隔离配置，不提供则修改全局配置）
+
+    Returns:
+        0-成功，其他-错误码
+    """
+    global DEFAULT_CNDE_STATES, _ip_states
+
+    # 确定要操作的配置列表
+    if ip:
+        if ip not in _ip_states:
+            # 第一次为该IP添加，从默认配置复制一份
+            _ip_states[ip] = DEFAULT_CNDE_STATES.copy()
+        target_states = _ip_states[ip]
+    else:
+        target_states = DEFAULT_CNDE_STATES
+
+    added_count = 0
+    for state in states:
+        if state not in CNDE_STATE_CONFIG:
+            print(f"错误：无效的状态 {state}")
+            return RobotError.ERR_STATE_INVALID
+        if state in target_states:
+            print(f"错误：状态 {state} 已存在")
+            return RobotError.ERR_STATE_ALREADY_EXISTS
+        target_states.append(state)
+        added_count += 1
+
+    scope = f"IP[{ip}]" if ip else "全局"
+    print(f"CNDE配置已添加 {added_count} 个状态（{scope}），当前共 {len(target_states)} 个状态")
+    return 0
+
+
+def DeleteRobotRealtimeState(states: List[RobotState], ip: str = None) -> int:
+    """
+    在配置基础上删除CNDE状态列表（支持动态维护和IP隔离）
+
+    使用示例:
+        from fairino import Robot
+        from fairino.Robot import RobotState, DeleteRobotRealtimeState
+
+        # 【全局配置】在默认配置基础上删除
+        DeleteRobotRealtimeState([
+            RobotState.FtSensorRawData,
+            RobotState.ClAnglogInput,
+        ])
+
+        # 【IP隔离】删除特定机器人的状态
+        DeleteRobotRealtimeState([RobotState.FtSensorRawData], ip='192.168.58.2')
+
+        # 创建RPC连接
+        robot = Robot.RPC('192.168.58.2')
+
+    Args:
+        states: RobotState枚举列表，要删除的状态
+        ip: 可选，指定机器人IP（用于多机器人隔离配置，不提供则修改全局配置）
+
+    Returns:
+        0-成功，其他-错误码
+    """
+    global DEFAULT_CNDE_STATES, _ip_states
+
+    # 确定要操作的配置列表
+    if ip:
+        if ip not in _ip_states:
+            print(f"错误：IP {ip} 没有配置")
+            return RobotError.ERR_STATE_INVALID
+        target_states = _ip_states[ip]
+    else:
+        target_states = DEFAULT_CNDE_STATES
+
+    removed_count = 0
+    for state in states:
+        if state not in CNDE_STATE_CONFIG:
+            print(f"错误：无效的状态 {state}")
+            return RobotError.ERR_STATE_INVALID
+        if state not in target_states:
+            print(f"错误：状态 {state} 不存在")
+            return RobotError.ERR_STATE_INVALID
+        if len(target_states) <= 1:
+            print("错误：至少需要一个状态")
+            return RobotError.ERR_NEED_AT_LEAST_ONE_STATE
+        target_states.remove(state)
+        removed_count += 1
+
+    scope = f"IP[{ip}]" if ip else "全局"
+    print(f"CNDE配置已删除 {removed_count} 个状态（{scope}），当前共 {len(target_states)} 个状态")
+    return 0
+
+
+def SetRobotRealtimeStatePeriod(period: int, ip: str = None) -> int:
+    """
+    设置CNDE状态反馈周期（支持全局或IP隔离）
+
+    使用示例:
+        from fairino import Robot
+        from fairino.Robot import SetRobotRealtimeStatePeriod
+
+        # 设置全局周期
+        SetRobotRealtimeStatePeriod(100)
+
+        # 为特定IP设置周期
+        SetRobotRealtimeStatePeriod(50, ip='192.168.58.2')
+
+    Args:
+        period: 数据周期(ms)，范围8-1000
+        ip: 可选，指定机器人IP（不提供则修改全局配置）
+
+    Returns:
+        0-成功，其他-错误码
+    """
+    global DEFAULT_CNDE_PERIOD
+
+    if period < 8 or period > 1000:
+        print(f"错误：周期必须在8-1000ms之间，当前值: {period}ms")
+        return RobotError.ERR_PARAM_VALUE
+
+    if ip:
+        # IP-specific周期存储在 _ip_states 中，或需要新增存储
+        # 目前简化处理：仅支持全局周期设置
+        print(f"警告：IP-specific周期暂未实现，设置全局周期为 {period}ms")
+    else:
+        DEFAULT_CNDE_PERIOD = period
+        print(f"CNDE默认周期已设置为 {period}ms")
+
+    return 0
+
+
+# ==================== 数据类型大小计算函数 ====================
+def get_cnde_type_size(type_str: str) -> int:
+    """获取CNDE数据类型大小
+    支持：单类型(UINT8)、数组类型(DOUBLE_6)、多字段类型(DOUBLE,DOUBLE)
+    """
+    type_sizes = {
+        "UINT8": 1, "INT8": 1,
+        "UINT16": 2, "INT16": 2,
+        "UINT32": 4, "INT32": 4,
+        "FLOAT": 4, "DOUBLE": 8,
+    }
+    import re
+
+    # 处理逗号分隔的多字段类型 (如 "DOUBLE,DOUBLE", "UINT8,UINT8")
+    if ',' in type_str:
+        total_size = 0
+        for single_type in type_str.split(','):
+            single_type = single_type.strip()
+            size = get_cnde_type_size(single_type)  # 递归处理每个类型
+            if size <= 0:
+                return 0  # 如果任何类型无法解析，返回0表示错误
+            total_size += size
+        return total_size
+
+    # 处理数组类型 (如 "DOUBLE_6", "INT32_7")
+    array_match = re.match(r'(\w+)_(\d+)', type_str)
+    if array_match:
+        base_type = array_match.group(1)
+        count = int(array_match.group(2))
+        base_size = type_sizes.get(base_type, 0)
+        if base_size <= 0:
+            return 0
+        return base_size * count
+
+    # 单类型
+    return type_sizes.get(type_str, 0)
+
+
+# ==================== FRCNDEClient CNDE客户端类 ====================
+class FRCNDEClient:
+    """
+    CNDE TCP客户端类
+    通过20005端口与机器人建立TCP连接，使用CNDE协议接收状态数据
+    """
+
+    ERR_SUCCESS = 0
+    ERR_NEED_AT_LEAST_ONE_STATE = -1
+    ERR_STATE_INVALID = -2
+    ERR_PARAM_VALUE = -3
+    ERR_STATE_ALREADY_EXISTS = -4
+    ERR_SOCKET_COM_FAILED = -5
+
+    def __init__(self, robot_state_pkg: RobotStatePkg, com_err_flag: list, ip: str = None, rpc=None):
+        self._robot_state_pkg = robot_state_pkg
+        self._sock_com_err = com_err_flag
+        self._rpc = rpc  # RPC实例引用，用于断线时触发重连
+        self._tcp_socket = None
+        self._ip = ip or "192.168.58.2"
+        self._port = 20005
+        self._robot_state_run_flag = False
+        self._recv_thread = None
+        self._stop_event = threading.Event()
+        self._recv_mutex = threading.Lock()
+        self._send_count = 0
+        self._robot_state_period = DEFAULT_CNDE_PERIOD  # 使用全局默认周期
+        self._config_states = []
+        self._all_states = CNDE_STATE_CONFIG
+        self._init_default_config(self._ip)
+
+    def _init_default_config(self, ip: str = None):
+        """初始化默认配置状态（优先使用IP-specific配置）"""
+        global _ip_states
+
+        if ip and ip in _ip_states:
+            # 使用IP-specific配置
+            self._config_states = _ip_states[ip].copy()
+            print(f"CNDE配置从IP专属加载 ({ip}): {len(self._config_states)} 个状态")
+        else:
+            # 使用全局默认配置
+            self._config_states = DEFAULT_CNDE_STATES.copy()
+
+        self._robot_state_period = DEFAULT_CNDE_PERIOD
+
+    def connect(self, ip: str = None, port: int = None) -> int:
+        """连接到机器人CNDE端口"""
+        if ip:
+            self._ip = ip
+        if port:
+            self._port = port
+
+        self._tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._tcp_socket.settimeout(3.0)
+
+        try:
+            self._tcp_socket.connect((self._ip, self._port))
+        except Exception as e:
+            print(f"CNDE连接失败: {e}")
+            self._sock_com_err[0] = self.ERR_SOCKET_COM_FAILED
+            return self.ERR_SOCKET_COM_FAILED
+
+        self._robot_state_run_flag = True
+
+        rtn = self._send_cnde_output_config()
+        print(f"SendCNDEOutputConfig rtn is {rtn}")
+        if rtn != 0:
+            # 配置失败，关闭连接并清理状态
+            self._robot_state_run_flag = False
+            if self._tcp_socket:
+                try:
+                    self._tcp_socket.close()
+                except Exception:
+                    pass
+                self._tcp_socket = None
+            return rtn
+
+        rtn = self._set_cnde_start()
+        print(f"SetCNDEStart rtn is {rtn}")
+        if rtn != 0:
+            # 启动失败，关闭连接并清理状态
+            self._robot_state_run_flag = False
+            if self._tcp_socket:
+                try:
+                    self._tcp_socket.close()
+                except Exception:
+                    pass
+                self._tcp_socket = None
+            return rtn
+
+        self._recv_thread = threading.Thread(target=self._recv_robot_state_thread, name="CNDERecvThread")
+        self._recv_thread.daemon = True
+        self._recv_thread.start()
+        return 0
+
+    def close(self) -> int:
+        """关闭CNDE连接"""
+        self._robot_state_run_flag = False
+        self._stop_event.set()
+        # 尝试发送停止帧，但忽略套接字已关闭的错误
+        try:
+            if self._tcp_socket:
+                self._set_cnde_stop()
+        except Exception:
+            pass  # 连接已断开，忽略错误
+        # 关闭TCP套接字
+        if self._tcp_socket:
+            try:
+                self._tcp_socket.close()
+            except Exception:
+                pass
+            self._tcp_socket = None
+        # 等待接收线程结束
+        if self._recv_thread and self._recv_thread.is_alive():
+            self._recv_thread.join(timeout=2.0)
+        return 0
+
+    def _send_data(self, data: bytes) -> int:
+        """发送数据到TCP连接"""
+        if not self._tcp_socket:
+            return -1
+        try:
+            sent = self._tcp_socket.send(data)
+            return sent if sent == len(data) else -1
+        except OSError as e:
+            # WinError 10038: 套接字已关闭，静默处理
+            if e.winerror == 10038:
+                return -1
+            print(f"CNDE发送失败: {e}")
+            return -1
+        except Exception as e:
+            print(f"CNDE发送失败: {e}")
+            return -1
+
+    def _recv_data(self, buf: bytearray, timeout: float = 1.0) -> int:
+        """接收数据"""
+        if not self._tcp_socket:
+            return -1
+        try:
+            self._tcp_socket.settimeout(timeout)
+            data = self._tcp_socket.recv(len(buf))
+            if not data:
+                return 0
+            buf[:len(data)] = data
+            return len(data)
+        except socket.timeout:
+            return 0
+        except Exception as e:
+            print(f"CNDE接收失败: {e}")
+            return -1
+
+    def _send_cnde_output_config(self) -> int:
+        """发送CNDE输出配置帧"""
+        pkg = CNDE_PKG()
+        pkg.count = self._send_count
+        self._send_count = (self._send_count + 1) % 256
+        pkg.type = CNDE_FRAME_TYPE_OUTPUT_CONFIG
+
+        config_data = bytearray()
+        config_data.extend(Int16ToByte(self._robot_state_period))
+
+        state_names = []
+        for state in self._config_states:
+            if state in self._all_states:
+                cnde_name = self._all_states[state][0]
+                state_names.append(cnde_name)
+
+        state_names_str = ",".join(state_names)
+        config_data.extend(state_names_str.encode('utf-8'))
+
+        pkg.data = bytes(config_data)
+        pkg.len = len(pkg.data)
+
+        frame = CNDEPkgToFrame(pkg)
+        print(f"发送CNDE配置: 周期={self._robot_state_period}ms, 状态数={len(self._config_states)}")
+        print(f"配置列表: {state_names_str}")  # 调试：确认实际发送的状态名
+
+        rtn = self._send_data(frame)
+        if rtn <= 0:
+            print("CNDE Send output config pkg Failed")
+            return -1
+
+        pkg_buf = bytearray(CNDE_MAX_PKG_SIZE)
+        timeout_count = 5
+
+        while self._robot_state_run_flag and timeout_count > 0:
+            recv_len = self._recv_data(pkg_buf, 0.1)
+            if recv_len < 0:
+                self._sock_com_err[0] = self.ERR_SOCKET_COM_FAILED
+                return -1
+            elif recv_len == 0:
+                timeout_count -= 1
+                continue
+
+            recv_pkg = CNDE_PKG()
+            rtn = FrameToCNDEPkg(bytes(pkg_buf[:recv_len]), recv_pkg)
+            if rtn != 0:
+                timeout_count -= 1  # 帧解析失败也减少计数
+                continue
+
+            # # 调试：打印收到的所有帧
+            # if recv_pkg.type == 6 and recv_pkg.data:
+            #     try:
+            #         data_str = recv_pkg.data.decode('utf-8', errors='replace')
+            #         print(f"  [Config]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data='{data_str}'")
+            #     except:
+            #          print(f"  [Config]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex()}")
+            # else:
+            #      print(f"  [Config]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex() if recv_pkg.data else 'None'}")
+
+            if recv_pkg.type == CNDE_FRAME_TYPE_MESSAGE:
+                if len(recv_pkg.data) > 0 and recv_pkg.data[0] == 0x00:
+                    print("CNDE配置成功")
+                    return 0
+                else:
+                    # 解析数据内容，检查是否包含NOT_FOUND
+                    data_str = ""
+                    try:
+                        if recv_pkg.data:
+                            # 尝试解码数据（跳过第一个字节的状态码）
+                            data_str = recv_pkg.data[1:].decode('utf-8', errors='replace') if len(recv_pkg.data) > 1 else ""
+                    except Exception as e:
+                        print(f"解析响应数据失败: {e}")
+
+                    print(f"CNDE配置失败: data[0]={recv_pkg.data[0] if recv_pkg.data else 'None'}")
+                    # if recv_pkg.data:
+                    #      print(f"响应数据: {recv_pkg.data.hex()}")
+
+                    # 检查是否包含NOT_FOUND（状态不存在）
+                    if "NOT_FOUND" in data_str.upper():
+                        print(f"检测到NOT_FOUND错误: {data_str}")
+                        return RobotError.ERR_STATE_INVALID
+                    return -2
+            else:
+                # 收到其他类型帧（如数据帧），减少超时计数
+                timeout_count -= 1
+        print("CNDE配置超时")
+        return -3
+
+
+    def _set_cnde_start(self) -> int:
+        """发送CNDE开始帧"""
+        pkg = CNDE_PKG()
+        pkg.count = self._send_count
+        self._send_count = (self._send_count + 1) % 256
+        pkg.type = CNDE_FRAME_TYPE_OUTPUT_START
+        pkg.len = 0
+
+        frame = CNDEPkgToFrame(pkg)
+        rtn = self._send_data(frame)
+        if rtn <= 0:
+            print("CNDE Send Start pkg Failed")
+            return -1
+
+        pkg_buf = bytearray(CNDE_MAX_PKG_SIZE)
+        timeout_count = 50
+
+        while self._robot_state_run_flag and timeout_count > 0:
+            recv_len = self._recv_data(pkg_buf, 0.1)
+            if recv_len < 0:
+                self._sock_com_err[0] = self.ERR_SOCKET_COM_FAILED
+                return -1
+            elif recv_len == 0:
+                timeout_count -= 1
+                continue
+
+            recv_pkg = CNDE_PKG()
+            rtn = FrameToCNDEPkg(bytes(pkg_buf[:recv_len]), recv_pkg)
+            if rtn != 0:
+                timeout_count -= 1
+                continue
+
+            # # 调试：打印接收到的帧类型和内容
+            # if recv_pkg.type == 6 and recv_pkg.data:
+            #     try:
+            #         data_str = recv_pkg.data.decode('utf-8', errors='replace')
+            #         print(f"  [Start]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data='{data_str}'")
+            #     except:
+            #         print(f"  [Start]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex()}")
+            # else:
+            #     print(f"  [Start]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex() if recv_pkg.data else 'None'}")
+
+            if recv_pkg.type == CNDE_FRAME_TYPE_MESSAGE:
+                if len(recv_pkg.data) > 0 and recv_pkg.data[0] == 0x00:
+                    print("CNDE开始成功")
+                    return 0
+                else:
+                    print(f"CNDE开始失败: data[0]={recv_pkg.data[0] if recv_pkg.data else 'None'}")
+                    return -2
+            elif recv_pkg.type == CNDE_FRAME_TYPE_OUTPUT_DATA:
+                # 机器人可能直接发送数据帧（表示已开始）
+                print("CNDE开始成功（收到数据帧）")
+                # 缓存数据帧供解析
+                self._parse_cnde_state_data(recv_pkg.data)
+                return 0
+            else:
+                timeout_count -= 1
+        print("CNDE开始超时")
+        return -3
+
+
+    def _set_cnde_stop(self) -> int:
+        """发送CNDE停止帧"""
+        with self._recv_mutex:
+            pkg = CNDE_PKG()
+            pkg.count = self._send_count
+            self._send_count = (self._send_count + 1) % 256
+            pkg.type = CNDE_FRAME_TYPE_OUTPUT_STOP
+            pkg.len = 0
+
+            frame = CNDEPkgToFrame(pkg)
+            rtn = self._send_data(frame)
+            if rtn <= 0:
+                # 套接字已关闭时不打印错误（正常关闭流程）
+                if self._tcp_socket:
+                    print("CNDE Send Stop pkg Failed")
+                return -1
+
+            pkg_buf = bytearray(CNDE_MAX_PKG_SIZE)
+            timeout_count = 30
+
+            while self._robot_state_run_flag and timeout_count > 0:
+                recv_len = self._recv_data(pkg_buf, 0.1)
+                if recv_len < 0:
+                    return -1
+                elif recv_len == 0:
+                    # 超时，重新发送停止帧（与C++一致）
+                    self._send_data(frame)
+                    timeout_count -= 1
+                    continue
+
+                recv_pkg = CNDE_PKG()
+                rtn = FrameToCNDEPkg(bytes(pkg_buf[:recv_len]), recv_pkg)
+                if rtn != 0:
+                    timeout_count -= 1
+                    continue
+
+                # 调试：打印接收到的帧
+                # if recv_pkg.type == 6 and recv_pkg.data:
+                #     try:
+                #         data_str = recv_pkg.data.decode('utf-8', errors='replace')
+                #         print(f"  [Stop]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data='{data_str}'")
+                #     except:
+                #         print(f"  [Stop]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex()}")
+                # else:
+                #     print(f"  [Stop]收到帧: type={recv_pkg.type}, count={recv_pkg.count}, len={recv_pkg.len}, data={recv_pkg.data[:min(20, len(recv_pkg.data))].hex() if recv_pkg.data else 'None'}")
+
+                if recv_pkg.type == CNDE_FRAME_TYPE_MESSAGE:
+                    if len(recv_pkg.data) > 0 and recv_pkg.data[0] == 0x00:
+                        print("CNDE停止成功")
+                        return 0
+                    else:
+                        print("CNDE停止失败")
+                        return -2
+                else:
+                    timeout_count -= 1
+            print("CNDE停止超时")
+            return -3
+
+    def _recv_robot_state_thread(self):
+        """CNDE状态数据接收线程"""
+        pkg_buf = bytearray(CNDE_MAX_PKG_SIZE)
+
+        while self._robot_state_run_flag and not self._stop_event.is_set():
+            with self._recv_mutex:
+                recv_len = self._recv_data(pkg_buf, 0.5)
+                if recv_len < 0:
+                    print("CNDE接收错误，通讯失败")
+                    self._sock_com_err[0] = self.ERR_SOCKET_COM_FAILED
+                    # 触发RPC重连机制
+                    if self._rpc is not None:
+                        print("CNDE断线，触发RPC重连...")
+                        threading.Thread(target=self._rpc.reconnect, daemon=True).start()
+                    break
+                elif recv_len == 0:
+                    continue
+
+                recv_pkg = CNDE_PKG()
+                rtn = FrameToCNDEPkg(bytes(pkg_buf[:recv_len]), recv_pkg)
+                if rtn != 0:
+                    continue
+
+                if recv_pkg.type == CNDE_FRAME_TYPE_OUTPUT_DATA:
+                    self._parse_cnde_state_data(recv_pkg.data)
+
+        if self._tcp_socket:
+            try:
+                self._tcp_socket.close()
+            except Exception:
+                pass
+
+    def _parse_cnde_state_data(self, data: bytes):
+        """
+        解析CNDE状态数据
+        根据配置的状态列表，按顺序解析数据并填充到结构体对应字段
+        """
+        state_ptr_index = 0
+        data_len = len(data)
+
+        # print(f"\n[解析开始] 总数据长度: {data_len} 字节, 配置状态数: {len(self._config_states)}")
+
+        for idx, state in enumerate(self._config_states):
+            if state not in self._all_states:
+                print(f"  [{idx}] 状态 {state} 不在配置映射中，跳过")
+                continue
+
+            config_info = self._all_states[state]
+            cnde_name = config_info[0]
+            struct_field = config_info[1]
+            struct_type = config_info[2]  # Python结构体字段类型
+            cnde_type = config_info[3]    # CNDE发送的数据类型
+
+            cnde_size = get_cnde_type_size(cnde_type)
+            # print(f"  [{idx}] {cnde_name}: field='{struct_field}', cnde_type='{cnde_type}', "
+                #   f"struct_type='{struct_type}', size={cnde_size}, offset={state_ptr_index}")
+
+            if cnde_size <= 0:
+                print(f"      错误: cnde_size <= 0")
+                continue
+            if state_ptr_index + cnde_size > data_len:
+                print(f"      错误: 数据不足 ({state_ptr_index} + {cnde_size} > {data_len})")
+                break
+
+            # 打印原始数据片段（前16字节或全部）
+            data_slice = data[state_ptr_index:state_ptr_index + cnde_size]
+            hex_preview = ' '.join(f'{b:02X}' for b in data_slice[:min(16, len(data_slice))])
+            if len(data_slice) > 16:
+                hex_preview += f" ... (共{len(data_slice)}字节)"
+            # print(f"      原始数据: {hex_preview}")
+
+            try:
+                self._parse_and_set_field(data_slice, struct_field, cnde_type, struct_type, cnde_size)
+                state_ptr_index += cnde_size
+                # print(f"      解析完成，新偏移: {state_ptr_index}")
+            except Exception as e:
+                print(f"      解析失败: {e}")
+                import traceback
+                traceback.print_exc()
+                state_ptr_index += cnde_size
+
+        # print(f"[解析结束] 最终偏移: {state_ptr_index}/{data_len}")
+
+    def _parse_and_set_field(self, data: bytes, field_name: str, cnde_type: str, struct_type: str, cnde_size: int):
+        """
+        解析数据并设置结构体字段
+        """
+        # 处理多字段逐一赋值（如 RobotTime: year,mouth,day,hour,minute,second,millisecond）
+        if ',' in field_name:
+            field_names = [f.strip() for f in field_name.split(',')]
+            # struct_type可能是逗号分隔的类型列表，也可能是数组类型如INT32_7
+            if ',' in struct_type:
+                types = [t.strip() for t in struct_type.split(',')]
+            elif '_' in struct_type:
+                # 数组类型如INT32_7，提取基础类型INT32
+                base_type, count = self._parse_array_type(struct_type)
+                types = [base_type] * len(field_names)
+            else:
+                types = [struct_type] * len(field_names)
+
+            # 从cnde_type提取基础类型和数组大小（如INT32_7 -> INT32, 7）
+            if '_' in cnde_type:
+                cnde_base_type, cnde_count = self._parse_array_type(cnde_type)
+                cnde_elem_size = self._get_type_size(cnde_base_type)
+            else:
+                cnde_base_type = cnde_type
+                cnde_elem_size = self._get_type_size(cnde_type)
+
+            offset = 0
+            for i, fname in enumerate(field_names):
+                if not hasattr(self._robot_state_pkg, fname):
+                    offset += cnde_elem_size
+                    continue
+                if i >= len(types):
+                    break
+
+                struct_t = types[i]
+                # 从CNDE数据中提取值
+                sub_data = data[offset:offset+cnde_elem_size] if offset < len(data) else b''
+                value = self._parse_value(sub_data, cnde_base_type)
+
+                field = getattr(self._robot_state_pkg, fname)
+                # 类型转换：CNDE类型 -> 目标结构体类型
+                if struct_t == "UINT16":
+                    value = int(value) & 0xFFFF
+                elif struct_t == "UINT8":
+                    value = int(value) & 0xFF
+
+                setattr(self._robot_state_pkg, fname, type(field)(value))
+                offset += cnde_elem_size
+            return
+
+        if not hasattr(self._robot_state_pkg, field_name):
+            return
+
+        field = getattr(self._robot_state_pkg, field_name)
+
+        # 优先处理结构体字段（如 weldingBreakOffState）
+        if isinstance(field, Structure) or struct_type == "STRUCT":
+            self._set_struct_field(data, field, cnde_type)
+            return
+
+        # 处理结构体数组（如 extAxisStatus: EXT_AXIS_STATUS * 4）
+        if isinstance(field, ctypes.Array) and len(field) > 0 and isinstance(field[0], Structure):
+            self._set_struct_array_field(data, field, cnde_type)
+            return
+
+        # 处理数组类型（如 DOUBLE_6, UINT16_2）
+        if '_' in struct_type and not self._is_complex_type(struct_type):
+            # 多字段映射到数组（如 CNDE发送DOUBLE,DOUBLE映射到UINT16[2]）
+            if ',' in cnde_type and isinstance(field, ctypes.Array):
+                self._set_split_array_field(data, field, field_name, cnde_type, struct_type)
+            else:
+                self._set_array_field(data, field, field_name, cnde_type, struct_type)
+            return
+
+        # 处理多字段映射到数组（struct_type不是数组类型但field是数组）
+        if ',' in cnde_type and isinstance(field, ctypes.Array):
+            self._set_split_array_field(data, field, field_name, cnde_type, struct_type)
+            return
+
+        # 单字段处理
+        self._set_single_field(data, field, field_name, struct_type, cnde_type)
+
+    def _is_complex_type(self, type_str: str) -> bool:
+        """判断是否为复杂类型（包含多个下划线）"""
+        parts = type_str.split('_')
+        return len(parts) > 2 or (len(parts) == 2 and not parts[1].isdigit())
+
+    def _set_array_field(self, data: bytes, field, field_name: str, cnde_type: str, struct_type: str):
+        """设置数组字段（如 DOUBLE_6）"""
+        # 解析数组大小
+        base_type, count = self._parse_array_type(struct_type)
+
+        # 解析CNDE类型
+        cnde_base, cnde_count = self._parse_array_type(cnde_type) if '_' in cnde_type else (cnde_type, count)
+
+        # 计算元素大小
+        struct_elem_size = self._get_type_size(base_type)
+        cnde_elem_size = self._get_type_size(cnde_base)
+
+        if struct_elem_size <= 0 or cnde_elem_size <= 0:
+            return
+
+        for i in range(min(count, len(field))):
+            sub_data = data[i*cnde_elem_size:(i+1)*cnde_elem_size] if i*cnde_elem_size < len(data) else b''
+            value = self._parse_value(sub_data, cnde_base)
+
+            # 类型转换
+            if base_type == "DOUBLE" and cnde_base != "DOUBLE":
+                value = float(value)
+            elif base_type == "UINT16" and cnde_base == "DOUBLE":
+                value = int(value) & 0xFFFF
+            elif base_type == "INT32" and cnde_base in ["UINT16", "UINT8"]:
+                value = int(value)
+
+            field[i] = type(field[0])(value)
+
+    def _set_split_array_field(self, data: bytes, field, field_name: str, cnde_type: str, struct_type: str):
+        """处理CNDE多字段映射到数组（如 DOUBLE,DOUBLE -> UINT16[2]）"""
+        cnde_types = cnde_type.split(',')
+
+        # 解析结构体数组类型
+        base_type, count = self._parse_array_type(struct_type) if '_' in struct_type else (struct_type, len(field))
+
+        for i, ct in enumerate(cnde_types):
+            if i >= len(field):
+                break
+            ct = ct.strip()
+            elem_size = self._get_type_size(ct)
+            sub_data = data[i*elem_size:(i+1)*elem_size] if i*elem_size < len(data) else b''
+            value = self._parse_value(sub_data, ct)
+
+            # 类型转换
+            if base_type == "UINT16" and ct == "DOUBLE":
+                value = int(value) & 0xFFFF
+            elif base_type == "UINT8" and ct == "UINT8":
+                value = int(value) & 0xFF
+
+            field[i] = type(field[0])(value)
+
+    def _set_struct_field(self, data: bytes, field: Structure, cnde_type: str):
+        """设置结构体字段（如 weldingBreakOffState）"""
+        if ',' in cnde_type:
+            # 多字段映射到结构体子字段
+            types = [t.strip() for t in cnde_type.split(',')]
+            offset = 0
+            for fname, ftype in field._fields_:
+                if offset >= len(types):
+                    break
+                ct = types[offset]
+                elem_size = self._get_type_size(ct)
+                sub_data = data[offset*elem_size:(offset+1)*elem_size] if offset*elem_size < len(data) else b''
+                value = self._parse_value(sub_data, ct)
+                setattr(field, fname, type(getattr(field, fname))(value))
+                offset += 1
+        else:
+            # 单类型映射，直接memcpy风格设置
+            offset = 0
+            for fname, ftype in field._fields_:
+                elem_size = self._get_type_size(cnde_type)
+                sub_data = data[offset:offset+elem_size] if offset < len(data) else b''
+                value = self._parse_value(sub_data, cnde_type)
+                setattr(field, fname, type(getattr(field, fname))(value))
+                offset += elem_size
+
+    def _set_struct_array_field(self, data: bytes, field: ctypes.Array, cnde_type: str):
+        """设置结构体数组字段（如 extAxisStatus: EXT_AXIS_STATUS * 4）
+        
+        直接字节拷贝，将CNDE原始数据memcpy到结构体数组
+        """
+        import ctypes
+        # 计算结构体数组总大小
+        struct_size = ctypes.sizeof(field[0])
+        array_size = struct_size * len(field)
+        data_len = len(data)
+        
+        # 拷贝数据（取最小值，防止溢出）
+        copy_size = min(array_size, data_len)
+        
+        # 使用 memmove 直接拷贝字节到结构体数组内存
+        ctypes.memmove(ctypes.addressof(field), data[:copy_size], copy_size)
+
+    def _set_single_field(self, data: bytes, field, field_name: str, struct_type: str, cnde_type: str):
+        """设置单个字段的值（含类型转换）"""
+        value = self._parse_value(data, cnde_type)
+
+        # 类型转换逻辑
+        if struct_type == "UINT16" and cnde_type == "DOUBLE":
+            value = int(value) & 0xFFFF
+        elif struct_type == "INT32" and cnde_type == "UINT8":
+            value = int(value)
+        elif struct_type == "INT32" and cnde_type == "UINT16":
+            value = int(value)
+        elif struct_type == "FLOAT" and cnde_type == "DOUBLE":
+            value = float(value)
+        elif struct_type == "UINT8" and cnde_type == "INT32":
+            value = int(value) & 0xFF
+
+        setattr(self._robot_state_pkg, field_name, type(field)(value))
+
+    def _parse_array_type(self, type_str: str) -> tuple:
+        """解析数组类型，返回(base_type, count)"""
+        if '_' not in type_str:
+            return type_str, 1
+        parts = type_str.rsplit('_', 1)
+        try:
+            return parts[0], int(parts[1])
+        except (ValueError, IndexError):
+            return type_str, 1
+
+    def _get_type_size(self, type_str: str) -> int:
+        """获取数据类型大小（字节）"""
+        if '_' in type_str:
+            base, count = self._parse_array_type(type_str)
+            return self._get_type_size(base) * count
+
+        sizes = {
+            "UINT8": 1, "INT8": 1,
+            "UINT16": 2, "INT16": 2,
+            "UINT32": 4, "INT32": 4,
+            "FLOAT": 4, "DOUBLE": 8
+        }
+        return sizes.get(type_str, 0)
+
+    def _parse_value(self, data: bytes, type_str: str):
+        """根据类型解析数据"""
+        if not data:
+            return 0 if not type_str.startswith("FLOAT") and not type_str.startswith("DOUBLE") else 0.0
+
+        type_str = type_str.strip()
+
+        if type_str == "UINT8":
+            return data[0] if data else 0
+        elif type_str == "INT8":
+            return struct.unpack('<b', data[:1])[0] if data else 0
+        elif type_str == "UINT16":
+            return struct.unpack('<H', data[:2])[0] if len(data) >= 2 else 0
+        elif type_str == "INT16":
+            return struct.unpack('<h', data[:2])[0] if len(data) >= 2 else 0
+        elif type_str == "UINT32":
+            return struct.unpack('<I', data[:4])[0] if len(data) >= 4 else 0
+        elif type_str == "INT32":
+            return struct.unpack('<i', data[:4])[0] if len(data) >= 4 else 0
+        elif type_str == "FLOAT":
+            return struct.unpack('<f', data[:4])[0] if len(data) >= 4 else 0.0
+        elif type_str == "DOUBLE":
+            return struct.unpack('<d', data[:8])[0] if len(data) >= 8 else 0.0
+        return 0
+
+    def set_cnde_state_config(self, states: List[RobotState], period: int) -> int:
+        """设置CNDE状态配置
+        
+        注意：CNDE运行过程中禁止修改配置。
+        如需自定义配置，请在RPC启动前完成配置。
+        """
+        if not states:
+            return self.ERR_NEED_AT_LEAST_ONE_STATE
+        if period < 8 or period > 1000:
+            return self.ERR_PARAM_VALUE
+        
+        # 运行过程中禁止修改配置
+        if self._robot_state_run_flag and self._tcp_socket:
+            print("错误：CNDE运行中，禁止修改配置。请在RPC启动前完成自定义配置。")
+            return -6  # 运行时配置错误
+        
+        self._config_states = states.copy()
+        self._robot_state_period = period
+        return 0
+
+    def set_cnde_state_period(self, period: int) -> int:
+        """设置CNDE状态数据周期"""
+        if period < 8 or period > 1000:
+            return self.ERR_PARAM_VALUE
+        self._robot_state_period = period
+        if self._robot_state_run_flag and self._tcp_socket:
+            return self._send_cnde_output_config()
+        return 0
+
+    def get_cnde_state_config(self) -> tuple:
+        """获取当前CNDE配置
+        
+        Returns:
+            tuple: (配置状态列表, 数据周期ms)
+        """
+        return (self._config_states.copy(), self._robot_state_period)
+
+
+
 class RPC():
     ip_address = "192.168.58.2"
 
@@ -617,38 +2273,42 @@ class RPC():
     log_output_model = -1
     queue = Queue(maxsize=10000 * 1024)
     logging_thread = None
-    is_connect = True
-    ROBOT_REALTIME_PORT = 20004
+    is_connect = False
+    ROBOT_CNDE_PORT = 20005
     ROBOT_UDP_PORT = 20007
-    # BUFFER_SIZE = 1024 * 2
     BUFFER_SIZE = 1024 * 1024
-    thread=  threading.Thread()
+    thread = threading.Thread()
     UDPthread = threading.Thread()
-    SDK_state=True
+    SDK_state = True
 
     sock_cli_state_state = False
     closeRPC_state = False
     reconnect_lock = False
     reconnect_flag = False
-    g_sock_com_err = RobotError.ERROR_RECONN
-
+    g_sock_com_err = RobotError.ERR_SOCKET_COM_FAILED
+    
+    # 重连参数（默认值）
+    _reconnect_enable = True
+    _reconnect_max_retries = 30  # 默认最大重连次数
+    _reconnect_period = 1000  # 默认1秒（单位ms）
 
     def __init__(self, ip="192.168.58.2"):
-        self.lock = threading.Lock()  # 增加锁
+        self.lock = threading.Lock()
         self.ip_address = ip
         link = 'http://' + self.ip_address + ":20003"
-        self.robot = xmlrpc.client.ServerProxy(link)#xmlrpc连接机器人20003端口，用于发送机器人指令数据帧
+        self.robot = xmlrpc.client.ServerProxy(link)
 
         self.sock_cli_state = None
         self.robot_realstate_exit = False
-        self.robot_state_pkg = RobotStatePkg#机器人状态数据
+        self.robot_state_pkg = RobotStatePkg()
 
-        self.stop_event = threading.Event()  # 停止事件
-        self.connect_to_robot()
-        thread= threading.Thread(target=self.robot_state_routine_thread)#创建线程循环接收机器人状态数据
-        thread.daemon = True
-        thread.start()
-        time.sleep(1)
+        self.stop_event = threading.Event()
+        # 禁用20004端口（已用20005 CNDE完全取代）
+        # self.connect_to_robot()
+        # thread = threading.Thread(target=self.robot_state_routine_thread)
+        # thread.daemon = True
+        # thread.start()
+        # time.sleep(1)
         print(self.robot)
 
         # 创建UDP客户端（内部实现）
@@ -659,25 +2319,49 @@ class RPC():
         self._udp_count = 0
         self._udp_count_lock = threading.Lock()
 
+        # CNDE客户端（20005端口）- 完全取代20004端口功能
+        print("使用20005 CNDE端口获取状态数据（已取代20004端口）")
+        self._com_err_flag = [0]
+        # 传入IP地址以支持多机器人隔离配置，传入self以支持断线重连
+        self._cnde_client = FRCNDEClient(self.robot_state_pkg, self._com_err_flag, self.ip_address, self)
+        cnde_ok = False
+        xmlrpc_ok = False
+        
         try:
-            # 调用 XML-RPC 方法
+            cnde_rtn = self._cnde_client.connect(self.ip_address, self.ROBOT_CNDE_PORT)
+            if cnde_rtn == 0:
+                print("CNDE自动连接成功")
+                cnde_ok = True
+            else:
+                print(f"CNDE自动连接失败，错误码: {cnde_rtn}")
+        except Exception as e:
+            print(f"CNDE自动连接异常: {e}")
+
+        try:
             socket.setdefaulttimeout(1)
             self.robot.GetControllerIP()
+            print("XML-RPC连接测试成功")
+            xmlrpc_ok = True
         except socket.timeout:
             print("XML-RPC connection timed out.")
-            RPC.is_connect = False
-
         except socket.error as e:
             print("可能是网络故障，请检查网络连接。")
-            RPC.is_connect = False
         except Exception as e:
             print("An error occurred during XML-RPC call:", e)
-            RPC.is_connect = False
         finally:
-            # 恢复默认超时时间
             self.robot = None
             socket.setdefaulttimeout(None)
             self.robot = xmlrpc.client.ServerProxy(link)
+        
+        # 只有CNDE和XML-RPC都成功才设置is_connect = True
+        if cnde_ok and xmlrpc_ok:
+            RPC.is_connect = True
+            print("[调试] RPC连接完全成功，is_connect = True")
+        else:
+            RPC.is_connect = False
+            print(f"[调试] RPC连接失败 (CNDE:{cnde_ok}, XML-RPC:{xmlrpc_ok})，is_connect = False")
+        
+        self.robot = xmlrpc.client.ServerProxy(link)
 
     def SetUDPCmdRpyCallback(self, callback: UdpFrameCallback):
         """
@@ -712,436 +2396,278 @@ class RPC():
             return current
 
     def connect_to_robot(self):
-        """连接到机器人的实时端口"""
-        # print("SDK连接机器人")
-        self.sock_cli_state = socket.socket(socket.AF_INET, socket.SOCK_STREAM)#套接字连接机器人20004端口，用于实时更新机器人状态数据
-        self.sock_cli_state.settimeout(0.3)  # 设置超时时间为 0.05 秒
+        """连接到机器人CNDE端口(20005)"""
+        if self._cnde_client is None:
+            return False
         try:
-            self.sock_cli_state.connect((self.ip_address, self.ROBOT_REALTIME_PORT))
-            self.sock_cli_state_state = True
-        except socket.timeout:
-            # print("连接超时，请检查网络连接。")
-            self.sock_cli_state_state = False
-            return False
+            rtn = self._cnde_client.connect(self.ip_address, self.ROBOT_CNDE_PORT)
+            return rtn == 0
         except Exception as ex:
-            self.sock_cli_state_state = False
-            print("SDK连接机器人实时端口失败", ex)
+            print(f"CNDE连接失败: {ex}")
             return False
-        return True
-
+        
+    def SetReConnectParam(self, enable: bool, maxRetries: int, period: int) -> int:
+        """设置与机器人通讯重连参数
+        
+        Args:
+            enable: 网络故障时使能重连 true-使能 false-不使能
+            maxRetries: 最大重连次数
+            period: 重连周期，单位ms
+            
+        Returns:
+            错误码 0-成功
+        """
+        RPC._reconnect_enable = enable
+        RPC._reconnect_max_retries = maxRetries
+        RPC._reconnect_period = period
+        print(f"设置重连参数: enable={enable}, maxRetries={maxRetries}, period={period}ms")
+        return 0
+    
     def reconnect(self):
         """自动重连"""
-        max_retries = 1000
-        retry_interval = 2  # 2秒
-        # with self.lock:  # 加锁
-        # RPC.is_connect = False
-        # print("断联")
+        # 如果重连被禁用，直接返回失败
+        if not RPC._reconnect_enable:
+            print("重连功能已禁用")
+            self.SDK_state = False
+            return False
+        
+        max_retries = RPC._reconnect_max_retries
+        retry_interval = RPC._reconnect_period / 1000.0  # 转换为秒
+        
         self.reconnect_flag = True
+        
         for attempt in range(max_retries):
-            # print(f"尝试重新连接，第 {attempt + 1} 次")
-            # print(f"尝试重新连接")
-            # 确保 self.sock_cli_state 是新的 socket 对象
-            if self.sock_cli_state:
-                self.sock_cli_state.close()  # 关闭旧的 socket
-                self.sock_cli_state = None  # 重置为 None
-            # 重新初始化 XML-RPC 连接
-            # self.robot = None
-            # link = 'http://' + self.ip_address + ":20003"
-            # self.robot = xmlrpc.client.ServerProxy(link)
-            # 尝试连接
-
+            print(f"尝试重新连接，第 {attempt + 1} 次 / 最大{max_retries}次")
+            
             if self.connect_to_robot():
-                # print("重新连接成功")
+                print("重新连接成功")
                 self.SDK_state = True
                 self.reconnect_flag = False
+                RPC.is_connect = True  # 重连成功时设置连接状态
                 return True
-                # 验证 XML-RPC 连接
-                # try:
-                #     time.sleep(1)
-                #     self.Mode(0)  # 调用一个简单的 XML-RPC 方法
-                #     time.sleep(1)
-                #     self.Mode(1)  # 调用一个简单的 XML-RPC 方法
-                #     time.sleep(1)
-                #     # self.robot.Mode(0)  # 调用一个简单的 XML-RPC 方法
-                #     # time.sleep(1)
-                #     # self.robot.Mode(1)  # 调用一个简单的 XML-RPC 方法
-                #     # time.sleep(1)
-                #     # self.Mode(0)  # 调用一个简单的 XML-RPC 方法
-                #     print("XML-RPC 连接验证成功")
-                #     self.reconnect_flag = False
-                #     # RPC.is_connect = True
-                #     return True
-                # except Exception as ex:
-                #     print("XML-RPC 连接验证失败:", ex)
-                #     self.SDK_state = False
             else:
-                # print(f"重新连接失败，等待 {retry_interval} 秒后重试...")
+                print(f"重新连接失败，等待 {retry_interval:.1f} 秒后重试...")
                 time.sleep(retry_interval)
 
-        print("已达到最大重连次数，连接失败")
+        print(f"已达到最大重连次数({max_retries}次)，连接失败")
         self.SDK_state = False
         return False
-        #
-        # print("自动重连机制")
-        # for i in range(1,6):
-        #     print("---")
-        #     time.sleep(2)
-        #     try:
-        #         self.sock_cli_state = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        #         self.sock_cli_state.connect((self.ip_address, self.ROBOT_REALTIME_PORT))
-        #         self.sock_cli_state_state = True
-        #     except Exception as ex:
-        #         self.sock_cli_state_state = False
-        #         print("SDK连接机器人实时端口失败", ex)
-        #     if self.sock_cli_state_state:
-        #         # self.sock_cli_state_state = True
-        #         return
 
+    # def robot_state_routine_thread(self):
+    #     """处理机器人状态数据包的线程例程"""
 
-    def robot_state_routine_thread_old(self):
-        """处理机器人状态数据包的线程例程"""
+    #     while not self.closeRPC_state:
+    #         recvbuf = bytearray(self.BUFFER_SIZE)
+    #         tmp_recvbuf = bytearray(self.BUFFER_SIZE)
+    #         state_pkg = bytearray(self.BUFFER_SIZE)
+    #         find_head_flag = False
+    #         index = 0
+    #         length = 0
+    #         tmp_len = 0
+    #         expected_length = self.BUFFER_SIZE  # 初始期望接收长度
 
-        while not self.closeRPC_state:
-            recvbuf = bytearray(self.BUFFER_SIZE)
-            tmp_recvbuf = bytearray(self.BUFFER_SIZE)
-            state_pkg = bytearray(self.BUFFER_SIZE)
-            find_head_flag = False
-            index = 0
-            length = 0
-            tmp_len = 0
-            # if not self.sock_cli_state_state:
-            #     if not self.connect_to_robot():
-            #         return
+    #         try:
+    #             while not self.robot_realstate_exit and not self.stop_event.is_set():
+    #                 recvbyte = self.sock_cli_state.recv_into(recvbuf)
+    #                 # print(f"接收机器人状态字节 {recvbyte}")
+    #                 # print("Python 结构体大小:", sizeof(self.robot_state_pkg))
+    #                 if recvbyte <= 0:
+    #                     self.sock_cli_state.close()
+    #                     print("接收机器人状态字节 -1")
+    #                     if not self.reconnect():
+    #                         return
+    #                     continue
 
+    #                 # 处理临时缓冲区数据
+    #                 if tmp_len > 0:
+    #                     if tmp_len + recvbyte <= self.BUFFER_SIZE:
+    #                         recvbuf[:tmp_len + recvbyte] = tmp_recvbuf[:tmp_len] + recvbuf[:recvbyte]
+    #                         recvbyte += tmp_len
+    #                         tmp_len = 0
+    #                     else:
+    #                         tmp_len = 0
 
-            try:
-                # while not self.robot_realstate_exit:
-                while not self.robot_realstate_exit and not self.stop_event.is_set():
-                    recvbyte = self.sock_cli_state.recv_into(recvbuf)
-                    # timestamp_ms = int(datetime.now().timestamp() * 1000)
-                    # print("当前时间戳（毫秒级）:", timestamp_ms)
-                    if recvbyte <= 0:
-                        self.sock_cli_state.close()
-                        print("接收机器人状态字节 -1")
-                        # self.reconnect()
-                        return
-                    else:
-                        if tmp_len > 0:
-                            if tmp_len + recvbyte <= self.BUFFER_SIZE:
-                                recvbuf = tmp_recvbuf[:tmp_len] + recvbuf[:recvbyte]
-                                recvbyte += tmp_len
-                                tmp_len = 0
-                            else:
-                                tmp_len = 0
+    #                 i = 0
+    #                 while i < recvbyte:
+    #                     # 查找包头
+    #                     if format(recvbuf[i], '02X') == "5A" and not find_head_flag:
+    #                         if i + 4 < recvbyte and format(recvbuf[i + 1], '02X') == "5A":
+    #                             find_head_flag = True
+    #                             state_pkg[0] = recvbuf[i]
+    #                             index = 1
+    #                             length = (recvbuf[i + 4] << 8) | recvbuf[i + 3]
 
-                        for i in range(recvbyte):
-                            if format(recvbuf[i], '02X') == "5A" and not find_head_flag:
-                                if i + 4 < recvbyte:
-                                    if format(recvbuf[i+1], '02X') == "5A":
-                                        find_head_flag = True
-                                        state_pkg[0] = recvbuf[i]
-                                        index += 1
-                                        length = length | recvbuf[i + 4]
-                                        length = length << 8
-                                        length = length | recvbuf[i + 3]
-                                    else:
-                                        continue
-                                else:
-                                    tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                    tmp_len = recvbyte - i
-                                    break
-                            elif find_head_flag and index < length + 5:
-                                state_pkg[index] = recvbuf[i]
-                                index += 1
-                            elif find_head_flag and index >= length + 5:
-                                if i + 1 < recvbyte:
-                                    checksum = sum(state_pkg[:index])
-                                    checkdata = 0
-                                    checkdata = checkdata | recvbuf[i + 1]
-                                    checkdata = checkdata << 8
-                                    checkdata = checkdata | recvbuf[i]
+    #                             #检查长度是否超过预期
+    #                             if length + 7 > expected_length:
+    #                                 expected_length = length + 7
+    #                                 # 需要接收更多数据
+    #                                 tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
+    #                                 tmp_len = recvbyte - i
+    #                                 find_head_flag = False
+    #                                 break
 
-                                    if checksum == checkdata:
-                                        self.robot_state_pkg = RobotStatePkg.from_buffer_copy(recvbuf)
-                                        find_head_flag = False
-                                        index = 0
-                                        length = 0
-                                        i += 1
-                                    else:
-                                        # print(checksum,":",checkdata,"===========================")
-                                        self.robot_state_pkg.jt_cur_pos[0] = 0
-                                        self.robot_state_pkg.jt_cur_pos[1] = 0
-                                        self.robot_state_pkg.jt_cur_pos[2] = 0
-                                        find_head_flag = False
-                                        index = 0
-                                        length = 0
-                                        i += 1
-                                else:
-                                    print("4.2")
-                                    tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                    tmp_len = recvbyte - i
-                                    break
-                            else:
-                                continue
-            except Exception as ex:
-                if not self.closeRPC_state:
-                    self.sock_cli_state.close()
-                    self.sock_cli_state_state = False
-                    self.SDK_state=False
-                    # self.reconnect()
-                    # print("SDK读取机器人实时数据失败", ex)
-                    self.reconnect()
+    #                             i += 1
+    #                         else:
+    #                             i += 1
+    #                             continue
 
-    def robot_state_routine_thread(self):
-        """处理机器人状态数据包的线程例程"""
+    #                     # 已找到包头，收集数据
+    #                     elif find_head_flag and index < length + 5:
+    #                         if i >= recvbyte:
+    #                             break
 
-        while not self.closeRPC_state:
-            recvbuf = bytearray(self.BUFFER_SIZE)
-            tmp_recvbuf = bytearray(self.BUFFER_SIZE)
-            state_pkg = bytearray(self.BUFFER_SIZE)
-            find_head_flag = False
-            index = 0
-            length = 0
-            tmp_len = 0
-            expected_length = self.BUFFER_SIZE  # 初始期望接收长度
+    #                         state_pkg[index] = recvbuf[i]
+    #                         index += 1
+    #                         i += 1
 
-            try:
-                while not self.robot_realstate_exit and not self.stop_event.is_set():
-                    recvbyte = self.sock_cli_state.recv_into(recvbuf)
-                    # print(f"接收机器人状态字节 {recvbyte}")
-                    # print("Python 结构体大小:", sizeof(self.robot_state_pkg))
-                    if recvbyte <= 0:
-                        self.sock_cli_state.close()
-                        print("接收机器人状态字节 -1")
-                        if not self.reconnect():
-                            return
-                        continue
+    #                     # 检查校验和
+    #                     elif find_head_flag and index >= length + 5:
+    #                         if i + 1 < recvbyte:
+    #                             checksum = sum(state_pkg[:index])
+    #                             checkdata = (recvbuf[i + 1] << 8) | recvbuf[i]
 
-                    # 处理临时缓冲区数据
-                    if tmp_len > 0:
-                        if tmp_len + recvbyte <= self.BUFFER_SIZE:
-                            recvbuf[:tmp_len + recvbyte] = tmp_recvbuf[:tmp_len] + recvbuf[:recvbyte]
-                            recvbyte += tmp_len
-                            tmp_len = 0
-                        else:
-                            tmp_len = 0
+    #                             if checksum == checkdata:
+    #                                 self.robot_state_pkg = RobotStatePkg.from_buffer_copy(state_pkg[:sizeof(self.robot_state_pkg)])
 
-                    i = 0
-                    while i < recvbyte:
-                        # 查找包头
-                        if format(recvbuf[i], '02X') == "5A" and not find_head_flag:
-                            if i + 4 < recvbyte and format(recvbuf[i + 1], '02X') == "5A":
-                                find_head_flag = True
-                                state_pkg[0] = recvbuf[i]
-                                index = 1
-                                length = (recvbuf[i + 4] << 8) | recvbuf[i + 3]
+    #                                 # print(f"@@@@@@{self.robot_state_pkg.toolCoord[0]}")
+    #                                 find_head_flag = False
+    #                                 index = 0
+    #                                 length = 0
+    #                                 expected_length = self.BUFFER_SIZE  # 重置期望长度
+    #                                 i += 2
+    #                             else:
+    #                                 # 校验失败处理
+    #                                 self.robot_state_pkg.jt_cur_pos[0] = 0
+    #                                 self.robot_state_pkg.jt_cur_pos[1] = 0
+    #                                 self.robot_state_pkg.jt_cur_pos[2] = 0
+    #                                 find_head_flag = False
+    #                                 index = 0
+    #                                 length = 0
+    #                                 i += 2
+    #                         else:
+    #                             # 数据不足，保存到临时缓冲区
+    #                             tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
+    #                             tmp_len = recvbyte - i
+    #                             break
+    #                     else:
+    #                         i += 1
 
-                                #检查长度是否超过预期
-                                if length + 7 > expected_length:
-                                    expected_length = length + 7
-                                    # 需要接收更多数据
-                                    tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                    tmp_len = recvbyte - i
-                                    find_head_flag = False
-                                    break
+    #         except Exception as ex:
+    #             if not self.closeRPC_state:
+    #                 self.sock_cli_state.close()
+    #                 self.sock_cli_state_state = False
+    #                 self.SDK_state = False
+    #                 # print("SDK读取机器人实时数据失败", ex)
+    #                 self.reconnect()
 
-                                i += 1
-                            else:
-                                i += 1
-                                continue
+    # ==================== CNDE公共接口 ====================
+    def CNDESetStateConfig(self, states: List[RobotState], period: int) -> int:
+        """
+        设置CNDE状态订阅配置
+        Args:
+            states: RobotState枚举列表
+            period: 数据周期(ms)，范围8-1000
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client.set_cnde_state_config(states, period)
 
-                        # 已找到包头，收集数据
-                        elif find_head_flag and index < length + 5:
-                            if i >= recvbyte:
-                                break
+    def CNDEAddState(self, state: RobotState) -> int:
+        """
+        添加单个CNDE状态订阅
+        Args:
+            state: RobotState枚举值
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client.add_cnde_state(state)
 
-                            state_pkg[index] = recvbuf[i]
-                            index += 1
-                            i += 1
+    def CNDEDeleteState(self, state: RobotState) -> int:
+        """
+        删除单个CNDE状态订阅
+        Args:
+            state: RobotState枚举值
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client.delete_cnde_state(state)
 
-                        # 检查校验和
-                        elif find_head_flag and index >= length + 5:
-                            if i + 1 < recvbyte:
-                                checksum = sum(state_pkg[:index])
-                                checkdata = (recvbuf[i + 1] << 8) | recvbuf[i]
+    def CNDESetPeriod(self, period: int) -> int:
+        """
+        设置CNDE数据周期
+        Args:
+            period: 数据周期(ms)，范围8-1000
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client.set_cnde_state_period(period)
 
-                                if checksum == checkdata:
-                                    self.robot_state_pkg = RobotStatePkg.from_buffer_copy(state_pkg[:sizeof(self.robot_state_pkg)])
+    def CNDEGetConfig(self) -> tuple:
+        """
+        获取当前CNDE配置
+        Returns:
+            tuple: (配置状态列表, 数据周期)
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return None
+        return self._cnde_client.get_cnde_state_config()
 
-                                    # print(f"@@@@@@{self.robot_state_pkg.toolCoord[0]}")
-                                    find_head_flag = False
-                                    index = 0
-                                    length = 0
-                                    expected_length = self.BUFFER_SIZE  # 重置期望长度
-                                    i += 2
-                                else:
-                                    # 校验失败处理
-                                    self.robot_state_pkg.jt_cur_pos[0] = 0
-                                    self.robot_state_pkg.jt_cur_pos[1] = 0
-                                    self.robot_state_pkg.jt_cur_pos[2] = 0
-                                    find_head_flag = False
-                                    index = 0
-                                    length = 0
-                                    i += 2
-                            else:
-                                # 数据不足，保存到临时缓冲区
-                                tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                tmp_len = recvbyte - i
-                                break
-                        else:
-                            i += 1
+    def CNDESendStart(self) -> int:
+        """
+        发送CNDE开始指令
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client._set_cnde_start()
 
-            except Exception as ex:
-                if not self.closeRPC_state:
-                    self.sock_cli_state.close()
-                    self.sock_cli_state_state = False
-                    self.SDK_state = False
-                    # print("SDK读取机器人实时数据失败", ex)
-                    self.reconnect()
+    def CNDESendStop(self) -> int:
+        """
+        发送CNDE停止指令
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            print("CNDE未连接，请先调用CNDEConnect")
+            return -1
+        return self._cnde_client._set_cnde_stop()
 
-    def robot_state_routine_thread_new(self):
-        """处理机器人状态数据包的线程例程"""
+    def CNDEConnect(self) -> int:
+        """
+        手动连接CNDE（RPC初始化时已自动连接，通常无需调用）
+        Returns:
+            0-成功，其他-错误码
+        """
+        if self._cnde_client is None:
+            self._com_err_flag = [0]
+            # 传入IP地址以支持多机器人隔离配置，传入self以支持断线重连
+            self._cnde_client = FRCNDEClient(self.robot_state_pkg, self._com_err_flag, self.ip_address, self)
+        return self._cnde_client.connect(self.ip_address, self.ROBOT_CNDE_PORT)
 
-        while not self.closeRPC_state:
-            # 使用动态缓冲区大小，初始为 self.BUFFER_SIZE
-            current_buffer_size = self.BUFFER_SIZE
-            recvbuf = bytearray(current_buffer_size)
-            tmp_recvbuf = bytearray(current_buffer_size)
-            state_pkg = bytearray(current_buffer_size)
-            find_head_flag = False
-            index = 0
-            length = 0
-            tmp_len = 0
-
-            try:
-                while not self.robot_realstate_exit and not self.stop_event.is_set():
-                    recvbyte = self.sock_cli_state.recv_into(recvbuf)
-
-                    if recvbyte <= 0:
-                        self.sock_cli_state.close()
-                        print("接收机器人状态字节 -1")
-                        if not self.reconnect():
-                            return
-                        continue
-
-                    # 处理临时缓冲区数据
-                    if tmp_len > 0:
-                        if tmp_len + recvbyte <= current_buffer_size:
-                            recvbuf[:tmp_len + recvbyte] = tmp_recvbuf[:tmp_len] + recvbuf[:recvbyte]
-                            recvbyte += tmp_len
-                            tmp_len = 0
-                        else:
-                            # 需要扩大接收缓冲区
-                            new_buffer_size = tmp_len + recvbyte
-                            new_recvbuf = bytearray(new_buffer_size)
-                            new_recvbuf[:tmp_len] = tmp_recvbuf[:tmp_len]
-                            new_recvbuf[tmp_len:tmp_len + recvbyte] = recvbuf[:recvbyte]
-                            recvbuf = new_recvbuf
-                            current_buffer_size = new_buffer_size
-                            recvbyte += tmp_len
-                            tmp_len = 0
-
-                    i = 0
-                    while i < recvbyte:
-                        # 查找包头
-                        if format(recvbuf[i], '02X') == "5A" and not find_head_flag:
-                            if i + 4 < recvbyte and format(recvbuf[i + 1], '02X') == "5A":
-                                find_head_flag = True
-                                state_pkg[0] = recvbuf[i]
-                                index = 1
-                                length = (recvbuf[i + 4] << 8) | recvbuf[i + 3]
-
-                                # 检查长度是否超过当前缓冲区
-                                if length + 7 > current_buffer_size:
-                                    # 需要扩大缓冲区
-                                    new_buffer_size = length + 7 + 100  # 加一些额外空间
-                                    # 扩大所有相关缓冲区
-                                    new_recvbuf = bytearray(new_buffer_size)
-                                    new_state_pkg = bytearray(new_buffer_size)
-                                    new_tmp_recvbuf = bytearray(new_buffer_size)
-
-                                    # 复制现有数据
-                                    if recvbyte - i > 0:
-                                        new_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                    tmp_len = recvbyte - i
-                                    tmp_recvbuf = new_tmp_recvbuf
-
-                                    recvbuf = new_recvbuf
-                                    state_pkg = new_state_pkg
-                                    current_buffer_size = new_buffer_size
-
-                                    find_head_flag = False
-                                    break  # 跳出内层循环，重新接收数据
-
-                                i += 1
-                            else:
-                                i += 1
-                                continue
-
-                        # 已找到包头，收集数据
-                        elif find_head_flag and index < length + 5:
-                            if i >= recvbyte:
-                                break
-
-                            # 检查索引是否越界
-                            if index >= len(state_pkg):
-                                # 需要扩大 state_pkg 缓冲区
-                                new_size = index + 100
-                                new_state_pkg = bytearray(new_size)
-                                new_state_pkg[:len(state_pkg)] = state_pkg
-                                state_pkg = new_state_pkg
-
-                            state_pkg[index] = recvbuf[i]
-                            index += 1
-                            i += 1
-
-                        # 检查校验和
-                        elif find_head_flag and index >= length + 5:
-                            if i + 1 < recvbyte:
-                                checksum = sum(state_pkg[:index])
-                                checkdata = (recvbuf[i + 1] << 8) | recvbuf[i]
-
-                                if checksum == checkdata:
-                                    # 确保有足够的数据来解析
-                                    if index >= 1184:  # 根据错误信息，至少需要1184字节
-                                        try:
-                                            self.robot_state_pkg = RobotStatePkg.from_buffer_copy(state_pkg[:index])
-                                            print(f"@@@@@@{self.robot_state_pkg.toolCoord[0]}")
-                                        except Exception as e:
-                                            print(f"解析数据包失败: {e}")
-                                    else:
-                                        print(f"数据包大小不足: {index} < 1184")
-
-                                    find_head_flag = False
-                                    index = 0
-                                    length = 0
-                                    i += 2
-                                else:
-                                    # 校验失败处理
-                                    print(f"校验和失败: {checksum} != {checkdata}")
-                                    self.robot_state_pkg.jt_cur_pos[0] = 0
-                                    self.robot_state_pkg.jt_cur_pos[1] = 0
-                                    self.robot_state_pkg.jt_cur_pos[2] = 0
-                                    find_head_flag = False
-                                    index = 0
-                                    length = 0
-                                    i += 2
-                            else:
-                                # 数据不足，保存到临时缓冲区
-                                if recvbyte - i > 0:
-                                    tmp_recvbuf[:recvbyte - i] = recvbuf[i:recvbyte]
-                                    tmp_len = recvbyte - i
-                                break
-                        else:
-                            i += 1
-
-            except Exception as ex:
-                if not self.closeRPC_state:
-                    self.sock_cli_state.close()
-                    self.sock_cli_state_state = False
-                    self.SDK_state = False
-                    # print("SDK读取机器人实时数据失败", ex)
-                    self.reconnect()
+    def CNDEDisconnect(self) -> int:
+        """
+        断开CNDE连接
+        Returns:
+            0-成功
+        """
+        if self._cnde_client is None:
+            return 0
+        return self._cnde_client.close()
 
     def setup_logging(self, output_model=1, file_path="", file_num=5):
         """用于处理日志"""
@@ -1307,8 +2833,11 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetSDKVersion(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = 0
-        sdk = ["SDK:V2.2.4", "Robot:V3.9.4"]
+        sdk = ["SDK:V2.2.5", "Robot:V3.9.5"]
         return error, sdk
 
     """   
@@ -2076,6 +3605,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def ServoJ(self, joint_pos, axisPos, acc=0.0, vel=0.0, cmdT=0.008, filterT=0.0, gain=0.0, id=0, cmdType=0):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         """
         关节空间伺服运动
         Args:
@@ -2629,6 +4161,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def PauseMotion(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # error = self.robot.PauseMotion()
         self.send_message("/f/bIII0III103III5IIIPAUSEIII/b/f")
         return 0
@@ -2644,6 +4179,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def ResumeMotion(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         if self.GetSafetyCode() != 0:
             return self.GetSafetyCode()
         # error = self.robot.ResumeMotion()
@@ -2964,6 +4502,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetAI(self, id, block=0):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         id = int(id)
         block = int(block)
         # _error = self.robot.GetAI(id, block)
@@ -2990,6 +4531,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetToolAI(self, id, block=0):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         id = int(id)
         block = int(block)
         # _error = self.robot.GetToolAI(id, block)
@@ -3011,6 +4555,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetAxlePointRecordBtnState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # while self.reconnect_flag:
         #     time.sleep(0.1)
         # flag = True
@@ -3040,6 +4587,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetToolDO(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetToolDO()
         # error = _error[0]
         # if _error[0] == 0:
@@ -3059,6 +4609,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetDO(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetDO()
         # error = _error[0]
         # if _error[0] == 0:
@@ -3962,15 +5515,17 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualJointPosDegree(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
         flag = int(flag)
-        # _error = self.robot.GetActualJointPosDegree(flag)
-        # error = _error[0]
-        # if error == 0:
-        #     return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
-        # else:
-        #     return error
-        return 0,[self.robot_state_pkg.jt_cur_pos[0],self.robot_state_pkg.jt_cur_pos[1],self.robot_state_pkg.jt_cur_pos[2],
-                  self.robot_state_pkg.jt_cur_pos[3],self.robot_state_pkg.jt_cur_pos[4],self.robot_state_pkg.jt_cur_pos[5]]
+        _error = self.robot.GetActualJointPosDegree(flag)
+        error = _error[0]
+        if error == 0:
+            return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
+        else:
+            return error
+        # return 0,[self.robot_state_pkg.jt_cur_pos[0],self.robot_state_pkg.jt_cur_pos[1],self.robot_state_pkg.jt_cur_pos[2],
+        #           self.robot_state_pkg.jt_cur_pos[3],self.robot_state_pkg.jt_cur_pos[4],self.robot_state_pkg.jt_cur_pos[5]]
     """   
     @brief  获取关节当前位置 (弧度)
     @param  [in] 默认参数 flag：0-阻塞，1-非阻塞 默认1
@@ -4008,6 +5563,8 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualJointSpeedsDegree(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
         flag = int(flag)
         # _error = self.robot.GetActualJointSpeedsDegree(flag)
         # error = _error[0]
@@ -4028,6 +5585,8 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualJointAccDegree(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
         flag = int(flag)
         # _error = self.robot.GetActualJointAccDegree(flag)
         # error = _error[0]
@@ -4048,6 +5607,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetTargetTCPCompositeSpeed(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetTargetTCPCompositeSpeed(flag)
         # error = _error[0]
@@ -4067,6 +5629,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualTCPCompositeSpeed(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetActualTCPCompositeSpeed(flag)
         # error = _error[0]
@@ -4086,6 +5651,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetTargetTCPSpeed(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetTargetTCPSpeed(flag)
         # error = _error[0]
@@ -4106,6 +5674,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualTCPSpeed(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetActualTCPSpeed(flag)
         # error = _error[0]
@@ -4126,15 +5697,18 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualTCPPose(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
-        # _error = self.robot.GetActualTCPPose(flag)
-        # error = _error[0]
-        # if error == 0:
-        #     return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
-        # else:
-        #     return error
-        return 0,[self.robot_state_pkg.tl_cur_pos[0],self.robot_state_pkg.tl_cur_pos[1],self.robot_state_pkg.tl_cur_pos[2],
-                  self.robot_state_pkg.tl_cur_pos[3],self.robot_state_pkg.tl_cur_pos[4],self.robot_state_pkg.tl_cur_pos[5]]
+        _error = self.robot.GetActualTCPPose(flag)
+        error = _error[0]
+        if error == 0:
+            return error, [_error[1], _error[2], _error[3], _error[4], _error[5], _error[6]]
+        else:
+            return error
+        # return 0,[self.robot_state_pkg.tl_cur_pos[0],self.robot_state_pkg.tl_cur_pos[1],self.robot_state_pkg.tl_cur_pos[2],
+        #           self.robot_state_pkg.tl_cur_pos[3],self.robot_state_pkg.tl_cur_pos[4],self.robot_state_pkg.tl_cur_pos[5]]
 
     """   
     @brief  获取当前工具坐标系编号
@@ -4146,6 +5720,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualTCPNum(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetActualTCPNum(flag)
         # error = _error[0]
@@ -4165,6 +5742,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualWObjNum(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetActualWObjNum(flag)
         # error = _error[0]
@@ -4184,6 +5764,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetActualToolFlangePose(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetActualToolFlangePose(flag)
         # error = _error[0]
@@ -4323,6 +5906,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetJointTorques(self, flag=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         flag = int(flag)
         # _error = self.robot.GetJointTorques(flag)
         # error = _error[0]
@@ -4557,13 +6143,10 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetRobotMotionDone(self):
-        # _error = self.robot.GetRobotMotionDone()
-        # error = _error[0]
-        # if error == 0:
-        #     return error, _error[1]
-        # else:
-        #     return error
-            return 0,self.robot_state_pkg.motion_done
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        return 0, self.robot_state_pkg.motion_done
+
     """   
     @brief  查询机器人错误码
     @param  [in] NULL
@@ -4574,6 +6157,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetRobotErrorCode(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetRobotErrorCode()
         # error = _error[0]
         # if error == 0:
@@ -4625,6 +6211,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetMotionQueueLength(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetMotionQueueLength()
         # error = _error[0]
         # if error == 0:
@@ -4643,6 +6232,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetRobotEmergencyStopState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetRobotEmergencyStopState()
         # error = _error[0]
         # if error == 0:
@@ -4661,6 +6253,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetSafetyStopState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetSafetyStopState()
         # error = _error[0]
         # if error == 0:
@@ -4680,6 +6275,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetSDKComState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # while self.reconnect_flag:
         #     time.sleep(0.1)
         # flag = True
@@ -5237,14 +6835,15 @@ class RPC():
 
     @log_call
     @xmlrpc_timeout
-    def SetTrajectoryJSpeed(self, ovl):
+    def SetTrajectoryJSpeed(self, ovl, mode):
         while self.reconnect_flag:
             time.sleep(0.1)
         ovl = float(ovl)
+        mode = int(mode)
         flag = True
         while flag:
             try:
-                error = self.robot.SetTrajectoryJSpeed(ovl)
+                error = self.robot.SetTrajectoryJSpeed(ovl,mode)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -5579,6 +7178,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetProgramState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.GetProgramState()
         # error = _error[0]
         # if error == 0:
@@ -6067,6 +7669,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def FT_GetForceTorqueRCS(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.FT_GetForceTorqueRCS(0)
         # error = _error[0]
         # if error == 0:
@@ -6086,6 +7691,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def FT_GetForceTorqueOrigin(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # _error = self.robot.FT_GetForceTorqueOrigin(0)
         # error = _error[0]
         # return error
@@ -7338,6 +8946,9 @@ class RPC():
                          arcNum, weldTimeout, isWeave, weaveNum, tool, user,
                          vel=20.0, acc=0.0, ovl=100.0, blendR=-1.0, exaxis_pos=[0.0, 0.0, 0.0, 0.0], search=0,
                          offset_flag=0, offset_pos=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         startDesePos = list(map(float, startDesePos))
         endDesePos = list(map(float, endDesePos))
         startJPos = list(map(float, startJPos))
@@ -7566,7 +9177,7 @@ class RPC():
     @brief  初始化日志参数
     @param  [in]默认参数 output_model：输出模式，0-直接输出；1-缓冲输出；2-异步输出，默认1
     @param  [in]默认参数 file_path： 文件保存路径+名称，名称必须是xxx.log的形式，比如/home/fr/linux/fairino.log。
-                    默认执行程序所在路径，默认名称fairino_ year+month+data.log(如:fairino_2024_03_13.log);
+                    默认执行程序所在路径，默认名称fairino_ year+mouth+data.log(如:fairino_2024_03_13.log);
     @param  [in]默认参数 file_num：滚动存储的文件数量，1~20个，默认值为5。单个文件上限50M;
     @return 错误码 成功-0  失败-错误码
     """
@@ -7574,6 +9185,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def LoggerInit(self, output_model=1, file_path="", file_num=5):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return self.setup_logging(output_model, file_path, file_num)
 
     """   
@@ -7585,6 +9199,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def SetLoggerLevel(self, lvl=1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         lvl=int(lvl)
         log_level = self.set_log_level(lvl)
         return 0
@@ -7599,12 +9216,15 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def PointTableDownLoad(self, point_table_name, save_file_path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         if not os.path.exists(save_file_path):
             return RobotError.ERR_SAVE_FILE_PATH_NOT_FOUND
 
         rtn = self.robot.PointTableDownload(point_table_name)
         if rtn == -1:
-            return RobotError.ERR_POINTTABLE_NOTFOUND
+            return RobotError.ERR_UPLOAD_FILE_NOT_FOUND
         elif rtn != 0:
             return rtn
         port = 20011
@@ -7662,6 +9282,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def PointTableUpLoad(self, point_table_file_path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         MAX_UPLOAD_FILE_SIZE = 2 * 1024 * 1024  # 最大上传文件为2Mb
         # 判断上传文件是否存在
         if not os.path.exists(point_table_file_path):
@@ -7729,9 +9352,12 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def PointTableSwitch(self, point_table_name):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         rtn = self.robot.PointTableSwitch(point_table_name)  # 切换点位表
         if rtn != 0:
-            if rtn == RobotError.ERR_POINTTABLE_NOTFOUND:
+            if rtn == RobotError.ERR_UPLOAD_FILE_NOT_FOUND:
                 error_str = "PointTable not Found!"
             else:
                 error_str = "PointTable not Found!"
@@ -7749,11 +9375,14 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def PointTableUpdateLua(self, point_table_name, lua_file_name):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         try:
 
             rtn = self.robot.PointTableSwitch(point_table_name)  # 切换点位表
             if rtn != 0:
-                if rtn == RobotError.ERR_POINTTABLE_NOTFOUND:
+                if rtn == RobotError.ERR_UPLOAD_FILE_NOT_FOUND:
                     error_str = "PointTable not Found!"
                 else:
                     error_str = "PointTable not Found!"
@@ -7781,11 +9410,14 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def __FileDownLoad(self, fileType, fileName, saveFilePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         if not os.path.exists(saveFilePath):
             return RobotError.ERR_SAVE_FILE_PATH_NOT_FOUND
         rtn = self.robot.FileDownload(fileType, fileName)
         if rtn == -1:
-            return RobotError.ERR_POINTTABLE_NOTFOUND
+            return RobotError.ERR_UPLOAD_FILE_NOT_FOUND
         elif rtn != 0:
             return rtn
         port = 20011
@@ -7848,8 +9480,11 @@ class RPC():
     @xmlrpc_timeout
     def __FileUpLoad(self, fileType, filePath):
 
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         if not os.path.exists(filePath):
-            return RobotError.ERR_POINTTABLE_NOTFOUND
+            return RobotError.ERR_UPLOAD_FILE_NOT_FOUND
 
         MAX_UPLOAD_FILE_SIZE = 500 * 1024 * 1024;  # 最大上传文件为500Mb
         file_info = os.path.getsize(filePath)
@@ -7910,6 +9545,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def __FileDelete(self, fileType, fileName):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         rtn = self.robot.FileDelete(fileType, fileName)
         return rtn
 
@@ -7923,6 +9561,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def LuaDownLoad(self, fileName, savePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.__FileDownLoad(0, fileName, savePath)
         return error
 
@@ -7954,6 +9595,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def LuaDelete(self, fileName):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.__FileDelete(0, fileName)
         return error
 
@@ -7967,6 +9611,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetLuaList(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         _error = self.robot.GetLuaList()
         # size = len(_error)
         error = _error[0]
@@ -8968,6 +10615,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def ExtAxisStopJog(self, axisID):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         axisID = int(axisID)
         error =self.send_message("/f/bIII19III240III14IIIStopExtAxisJogIII/b/f")
         # error = self.robot.ExtAxisStartJog(7, axisID, 0, 0.0, 0.0, 0.0)
@@ -9911,6 +11561,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def ForceSensorAutoComputeLoad(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         rtn = self.ForceSensorSetSaveDataFlag(1)
         if rtn!=0:
             return rtn,None,None
@@ -10734,6 +12387,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetJointDriverTorque(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0,[self.robot_state_pkg.jointDriverTorque[0],self.robot_state_pkg.jointDriverTorque[1],self.robot_state_pkg.jointDriverTorque[2],
                   self.robot_state_pkg.jointDriverTorque[3],self.robot_state_pkg.jointDriverTorque[4],self.robot_state_pkg.jointDriverTorque[5]]
 
@@ -10885,6 +12541,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def SoftwareUpgrade(self,filePath, block):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.__FileUpLoad(1,filePath)
 
         print("__FileUpLoad", error)
@@ -10922,6 +12581,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetSoftwareUpgradeState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.robot_state_pkg.softwareUpgradeState
         return error
 
@@ -11357,7 +13019,6 @@ class RPC():
             name = paramStr.split(',')
             return error, name
         else:
-            logger_error(f"execute GetCtrlOpenLUAName fail {error}")
             return error, None
 
     """   
@@ -11481,6 +13142,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def AxleLuaUpload(self,filePath):
+
+        while self.reconnect_flag:
+            time.sleep(0.1)
 
         error = self.__FileUpLoad(10,filePath)
         file_name = "/tmp/" + os.path.basename(filePath)
@@ -11704,8 +13368,17 @@ class RPC():
     @xmlrpc_timeout
 
     def CloseRPC(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         # 设置停止事件以通知线程停止
         self.stop_event.set()
+
+        # 关闭CNDE连接（关键：必须先关闭CNDE再关闭RPC）
+        if hasattr(self, '_cnde_client') and self._cnde_client is not None:
+            print("关闭CNDE连接...")
+            self._cnde_client.close()
+            self._cnde_client = None
 
         # 如果线程仍在运行，则等待其结束
         # if self.thread.is_alive():
@@ -11714,8 +13387,9 @@ class RPC():
         # 清理 XML-RPC 代理
         if self.robot is not None:
             self.robot = None  # 将代理设置为 None，释放资源
-            self.sock_cli_state.close()
-            self.sock_cli_state = None
+            if self.sock_cli_state is not None:
+                self.sock_cli_state.close()
+                self.sock_cli_state = None
             self.robot_state_pkg = None
             self.closeRPC_state = True
             # self.robot_realstate_exit = False
@@ -11805,6 +13479,9 @@ class RPC():
     @xmlrpc_timeout
 
     def GetGripperRotNum(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0,self.robot_state_pkg.gripper_fault,self.robot_state_pkg.gripperRotNum
 
     """   
@@ -11818,6 +13495,9 @@ class RPC():
     @xmlrpc_timeout
 
     def GetGripperRotSpeed(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripperRotSpeed
 
     """   
@@ -11831,6 +13511,9 @@ class RPC():
     @xmlrpc_timeout
 
     def GetGripperRotTorque(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripperRotTorque
 
     """   
@@ -11889,6 +13572,9 @@ class RPC():
     @xmlrpc_timeout
 
     def TrajectoryJUpLoad(self,filePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.__FileUpLoad(20, filePath)
         return error
 
@@ -11903,6 +13589,9 @@ class RPC():
     @xmlrpc_timeout
 
     def TrajectoryJDelete(self, fileName):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.__FileDelete(20, fileName)
         return error
 
@@ -12590,6 +14279,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetRobotRealTimeState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0,self.robot_state_pkg
 
     """   
@@ -12601,6 +14293,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def StopMove(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.send_message("/f/bIII0III102III4IIIStopIII/b/f")
         return error
 
@@ -12668,6 +14363,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def RbLogDownload(self, savePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         try:
             error = self.robot.RbLogDownloadPrepare()
             if error == 0:
@@ -12692,6 +14390,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def AllDataSourceDownload(self, savePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         try:
             error = self.robot.AllDataSourceDownloadPrepare()
             if error == 0:
@@ -12716,6 +14417,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def DataPackageDownload(self, savePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         try:
             error = self.robot.DataPackageDownloadPrepare()
             if error == 0:
@@ -12812,6 +14516,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def ConveyorComDetectTrigger(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         error = self.send_message("/f/bIII0III1149III25IIIConveyorComDetectTrigger()III/b/f")
         return error
         # while self.reconnect_flag:
@@ -13051,6 +14758,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetSmarttoolBtnState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0,self.robot_state_pkg.smartToolState
 
     """2025.05.08"""
@@ -13092,6 +14802,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperActivateStatus(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault,self.robot_state_pkg.gripper_active
 
     """   
@@ -13105,6 +14818,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperCurPosition(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripper_position
 
     """   
@@ -13118,6 +14834,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperCurCurrent(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripper_current
 
     """   
@@ -13131,6 +14850,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperVoltage(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripper_voltage
 
     """   
@@ -13144,6 +14866,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperTemp(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripper_tmp
 
     """   
@@ -13157,6 +14882,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetGripperCurSpeed(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, self.robot_state_pkg.gripper_fault, self.robot_state_pkg.gripper_speed
 
     """2025.06.24"""
@@ -13365,6 +15093,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def SetJointFirmwareUpgrade(self, type, path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         type = int(type)
         path = str(path)
         errcode = self.__FileUpLoad(2, path)
@@ -13386,6 +15117,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def SetCtrlFirmwareUpgrade(self, type, path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         type = int(type)
         path = str(path)
         errcode = self.__FileUpLoad(2, path)
@@ -13405,6 +15139,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def SetEndFirmwareUpgrade(self, type, path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         type = int(type)
         path = str(path)
         errcode = self.__FileUpLoad(2, path)
@@ -13423,6 +15160,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def JointAllParamUpgrade(self, path):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         path = str(path)
         errcode = self.__FileUpLoad(5, path)
         if errcode == 0:
@@ -13760,6 +15500,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def OpenLuaUpload(self, filePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         filePath =str(filePath)
         errcode = self.__FileUpLoad(11, filePath)
         if errcode == 0:
@@ -14367,6 +16110,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetCurToolCoord(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, [self.robot_state_pkg.toolCoord[0],
                    self.robot_state_pkg.toolCoord[1],
                    self.robot_state_pkg.toolCoord[2],
@@ -14383,6 +16129,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetCurWObjCoord(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, [self.robot_state_pkg.wobjCoord[0],
                    self.robot_state_pkg.wobjCoord[1],
                    self.robot_state_pkg.wobjCoord[2],
@@ -14399,6 +16148,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetCurExToolCoord(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, [self.robot_state_pkg.extoolCoord[0],
                    self.robot_state_pkg.extoolCoord[1],
                    self.robot_state_pkg.extoolCoord[2],
@@ -14415,6 +16167,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def GetCurExAxisCoord(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         return 0, [self.robot_state_pkg.exAxisCoord[0],
                    self.robot_state_pkg.exAxisCoord[1],
                    self.robot_state_pkg.exAxisCoord[2],
@@ -14521,6 +16276,9 @@ class RPC():
     @log_call
     @xmlrpc_timeout
     def KernelUpgrade(self, filePath):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
         filePath = str(filePath)
         errcode = self.__FileUpLoad(6, filePath)
         if errcode == 0:
