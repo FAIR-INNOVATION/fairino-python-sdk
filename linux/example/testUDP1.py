@@ -28,7 +28,12 @@ def TestServoJUDP():
     print(f"✓ 已配置 {len(states)} 个状态字段，周期 {period_ms}ms")
 
 
-    robot = Robot.RPC('192.168.58.2')
+    # robot = Robot.RPC('192.168.58.2')
+    robot = Robot.RPC(
+        '192.168.58.2',
+        tls_enable=True,
+        tls_cert_path=r"E:\certs"
+    )
     robot.SetUDPCmdRpyCallback(callback)
     # # 初始化关节位置和外部轴位置
     j= [0, -90, 90, 0, 0, 0]
@@ -40,7 +45,7 @@ def TestServoJUDP():
     print("MoveJ返回结果: {}".format(result))
     vel = 0.0
     acc = 0.0
-    cmdT = 0.016
+    cmdT = 0.02
     filterT = 0.0
     gain = 0.0
     flag = 0
@@ -52,12 +57,15 @@ def TestServoJUDP():
     if ret != 0:
         print(f"GetActualJointPosDegree errcode:{ret}")
     while 1:
+        result = robot.MoveJ(joint_pos=j, tool=0, user=0, vel=100, acc=100, ovl=100,
+                             exaxis_pos=epos, blendT=-1, offset_flag=0, offset_pos=offset_pos)
+        print("MoveJ返回结果: {}".format(result))
         count = 300
         # result = robot.ServoMoveStart(cmdType=0)
         # print("ServoMoveStart返回结果: {}".format(result))
         while count > 0:
             result = robot.ServoJ(joint_pos=j, axisPos=epos, acc=acc, vel=vel, cmdT=cmdT,
-                         filterT=filterT, gain=gain, id=cmdID, cmdType=0)
+                         filterT=filterT, gain=gain, id=cmdID, cmdType=1)
             j[0] += dt
             j[1] += dt
             j[2] += dt
@@ -67,7 +75,7 @@ def TestServoJUDP():
             # epos[0] += dt
             count -= 1
             # print("返回结果: {}".format(result))
-            time.sleep(0.01)
+            time.sleep(0.02)
         # result = robot.ServoMoveEnd(cmdType=0)
         # print("ServoMoveEnd返回结果: {}".format(result))
 
@@ -76,7 +84,7 @@ def TestServoJUDP():
         # print("ServoMoveStart返回结果: {}".format(result))
         while count > 0:
             result = robot.ServoJ(joint_pos=j, axisPos=epos, acc=acc, vel=vel, cmdT=cmdT,
-                         filterT=filterT, gain=gain, id=cmdID, cmdType=0)
+                         filterT=filterT, gain=gain, id=cmdID, cmdType=1)
             j[0] -= dt
             j[1] -= dt
             j[2] -= dt
@@ -86,7 +94,7 @@ def TestServoJUDP():
             # epos[0] -= dt
             count -= 1
             # print("ServoJ返回结果: {}".format(result))
-            time.sleep(0.01)
+            time.sleep(0.02)
         # result = robot.ServoMoveEnd(cmdType=0)
         print("ServoMoveEnd返回结果: {}".format(result))
     robot.CloseRPC()

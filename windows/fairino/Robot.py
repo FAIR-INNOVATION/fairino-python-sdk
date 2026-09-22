@@ -18,9 +18,19 @@ from typing import Optional
 from typing import Callable, Optional, List, Tuple, Dict
 from dataclasses import dataclass
 import datetime
+import ssl
+import errno
 
+import select
+from mbedtls.tls import WantReadError, WantWriteError
+from mbedtls.tls import ClientContext, DTLSConfiguration, TrustStore
 # from Cython.Compiler.Options import error_on_unknown_names
+# ==================== 加密通信内置配置 ====================
+_SDK_DIR = os.path.dirname(os.path.abspath(__file__))
+_CERT_DIR = os.path.join(_SDK_DIR, "certs")
 
+# 默认关闭加密通信，需要客户主动调用 SetSDKTLSParam(True, path) 启用
+_DEFAULT_ENABLE_SECURITY = False
 # ==================== CNDE帧类型定义 ====================
 CNDE_FRAME_HEAD = 0x5A5A  # 帧头
 CNDE_FRAME_TAIL = 0xA5A5  # 帧尾
@@ -550,6 +560,8 @@ def xmlrpc_timeout(func):
 class RobotError:
     ERR_SUCCESS = 0
 
+    ERR_CMD_TLS_ENABLE_STATE = -22  # /* 机器人SDK与服务端的指令协议加密开启状态不一致 */
+    ERR_CNDE_STATES_START_FAILED  = -21	  #机器人CNDE状态启动失败
     ERR_TOO_MANY_STATES = -20  # 配置状态字段长度超限
     ERR_NEED_AT_LEAST_ONE_STATE = -19  # 至少需要配置一个状态字段
     ERR_STATE_INVALID = -18  # 状态字段不存在
@@ -738,21 +750,43 @@ class FrUdpClient:
     通过20007端口创建UDP套接字
     发送：透传，不封装
     接收：解析成帧结构，通过回调返回给上层
+    支持DTLS加密（发送/接收均走加密通道）
     """
 
-    def __init__(self, ip: str, port: int = 20007):
+    def __init__(self, ip: str, port: int = 20007, dtls_enable: bool = False,
+                 dtls_ca_cert: str = "", dtls_client_cert: str = "",
+                 dtls_client_key: str = "", dtls_server_hostname: str = ""):
         """
         初始化FR UDP客户端
+
         Args:
             ip: 机器人IP地址
             port: UDP端口，默认20007
+            dtls_enable: 是否启用DTLS
+            dtls_ca_cert: CA证书路径
+            dtls_client_cert: 客户端证书路径
+            dtls_client_key: 客户端私钥路径
+            dtls_server_hostname: 服务器主机名
         """
         self.ip = ip
         self.port = port
         self.callback = None
 
-        # UDP套接字
+        # DTLS配置（构造时传入，避免引用尚未定义的RPC类）
+        self._dtls_enable = bool(dtls_enable)
+        self._dtls_ca_cert = dtls_ca_cert
+        self._dtls_client_cert = dtls_client_cert
+        self._dtls_client_key = dtls_client_key
+        self._dtls_server_hostname = dtls_server_hostname
+
+        # 原始 UDP 套接字
         self.udp_socket: Optional[socket.socket] = None
+        # DTLS 包装后的套接字
+        self.dtls_socket = None
+        self._dtls_ctx = None
+        self._dtls_connected = False
+        # 串行化 DTLS 的握手 / 发送 / 接收
+        self._io_lock = threading.Lock()
 
         # 线程控制
         self.stop_event = threading.Event()
@@ -765,23 +799,196 @@ class FrUdpClient:
         # 创建UDP套接字
         self._create_socket()
 
-        print(f"FrUdpClient 初始化完成 - 目标IP: {ip}:{port}")
+        print(f"FrUdpClient 初始化完成 - 目标IP: {ip}:{port} - DTLS={'开' if self._dtls_enable else '关'}")
 
     def _create_socket(self):
-        """创建UDP套接字"""
+        """创建UDP套接字（可选DTLS加密）"""
         try:
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            if self._dtls_enable:
+                # DTLS客户端源端口必须固定（约定20008）
+                # 机器人端已connect锁定对端，随机端口会导致握手失败
+                local_bind_port = 20008
+            else:
+                # 明文UDP无需固定端口
+                local_bind_port = 0
+
+            try:
+                self.udp_socket.bind(('0.0.0.0', local_bind_port))
+            except OSError as e:
+                if self._dtls_enable:
+                    print(f"DTLS: 绑定本地端口{local_bind_port}失败: {e}")
+                    print(f"DTLS: 可能端口已被占用（重复运行或上次异常退出）")
+                    self.udp_socket = None
+                    return
+                else:
+                    raise
+
             self.udp_socket.settimeout(1.0)
-            self.udp_socket.bind(('0.0.0.0', 0))  # 绑定到任意本地端口
-
             local_host, local_port = self.udp_socket.getsockname()
-
             print(f"UDP套接字创建成功 - 本地端口: {local_port}")
+
+            if self._dtls_enable:
+                self._setup_dtls()
+            else:
+                self.dtls_socket = None
+                self._dtls_connected = True
 
         except Exception as e:
             print(f"UDP套接字创建失败: {e}")
             self.udp_socket = None
+
+    def _setup_dtls(self):
+        """使用python-mbedtls设置DTLS客户端"""
+        try:
+            from mbedtls.tls import ClientContext, DTLSConfiguration, TrustStore
+            from mbedtls import x509
+            from mbedtls.pk import RSA, ECC
+
+            # 1. 构建信任库（CA）
+            trust_store = None
+            if self._dtls_ca_cert and os.path.exists(self._dtls_ca_cert):
+                trust_store = TrustStore()
+                root_crt = x509.CRT.from_file(self._dtls_ca_cert)
+                trust_store.add(root_crt)
+                print(f"DTLS: 已加载CA证书 {self._dtls_ca_cert}")
+
+            # 2. 加载客户端证书链和私钥
+            cert_chain = None
+            if self._dtls_client_cert and self._dtls_client_key:
+                if os.path.exists(self._dtls_client_cert) and os.path.exists(self._dtls_client_key):
+                    client_crt = x509.CRT.from_file(self._dtls_client_cert)
+                    # 加载私钥（先尝试RSA，失败再尝试ECC）
+                    try:
+                        private_key = RSA.from_file(self._dtls_client_key)
+                    except Exception:
+                        private_key = ECC.from_file(self._dtls_client_key)
+                    cert_chain = ([client_crt], private_key)
+                    print(f"DTLS: 已加载客户端证书 {self._dtls_client_cert}")
+                else:
+                    print("DTLS错误: 客户端证书或私钥文件不存在")
+                    self.dtls_socket = None
+                    return
+
+            # 3. 构造DTLS配置（参数在构造时一次性传入）
+            try:
+                from mbedtls.tls import TLSVersion
+                config = DTLSConfiguration(
+                    trust_store=trust_store,
+                    certificate_chain=cert_chain,
+                    validate_certificates=(trust_store is not None),
+                    # minimum_version=TLSVersion.TLS1_2,
+                    # maximum_version=TLSVersion.TLS1_2,
+                )
+            except (ImportError, TypeError):
+                # 旧版本不支持版本参数，退回到默认
+                config = DTLSConfiguration(
+                    trust_store=trust_store,
+                    certificate_chain=cert_chain,
+                    validate_certificates=(trust_store is not None),
+                )
+
+            # 4. 创建客户端上下文并包装UDP socket
+            self._dtls_ctx = ClientContext(config)
+            self.dtls_socket = self._dtls_ctx.wrap_socket(
+                self.udp_socket,
+                server_hostname=self._dtls_server_hostname or None
+            )
+            self._dtls_connected = False
+            print("DTLS上下文配置成功")
+
+        except ImportError as e:
+            print(f"警告: 未安装python-mbedtls 或导入失败，DTLS功能不可用: {e}")
+            self.dtls_socket = None
+        except Exception as e:
+            print(f"DTLS配置失败: {e}")
+            self.dtls_socket = None
+
+    def _ensure_dtls_handshake(self) -> bool:
+        if not self._dtls_enable:
+            return True
+        if self._dtls_connected:
+            return True
+
+        HANDSHAKE_TIMEOUT = 30.0
+        RETRANSMIT_INTERVAL = 2.0
+
+        start = time.time()
+        last_retransmit = 0.0
+        attempt = 0
+
+        while time.time() - start < HANDSHAKE_TIMEOUT:
+            now = time.time()
+
+            if now - last_retransmit >= RETRANSMIT_INTERVAL:
+                last_retransmit = now
+                attempt += 1
+                print(f"[DTLS] 第 {attempt} 次尝试握手")
+
+                # 关闭旧 DTLS 和旧 UDP
+                if self.dtls_socket is not None:
+                    try:
+                        self.dtls_socket.close()
+                    except Exception:
+                        pass
+                    self.dtls_socket = None
+                if self.udp_socket is not None:
+                    try:
+                        self.udp_socket.close()
+                    except Exception:
+                        pass
+                    self.udp_socket = None
+
+                # 重建底层 UDP socket
+                try:
+                    self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    self.udp_socket.bind(('0.0.0.0', 20008))
+                    self.udp_socket.setblocking(False)
+                except Exception as e:
+                    print(f"[DTLS] 重建 UDP socket 失败: {e}")
+                    time.sleep(0.5)
+                    continue
+
+                # 重建 DTLS
+                try:
+                    self.dtls_socket = self._dtls_ctx.wrap_socket(
+                        self.udp_socket,
+                        server_hostname=self._dtls_server_hostname or None
+                    )
+                    self.dtls_socket.setblocking(False)
+                    self.dtls_socket.connect((self.ip, self.port))
+                except Exception as e:
+                    print(f"[DTLS] 重建 DTLS 失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    time.sleep(0.5)
+                    continue
+
+            # 驱动握手
+            try:
+                self.dtls_socket.do_handshake()
+                self._dtls_connected = True
+                print("DTLS握手成功")
+                return True
+            except (WantReadError, WantWriteError):
+                pass
+            except OSError as e:
+                winerr = getattr(e, "winerror", None)
+                if winerr == 10035 or getattr(e, "errno", None) in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    pass
+                else:
+                    print(f"DTLS握手异常: {e}")
+            except Exception as e:
+                print(f"DTLS握手异常: {e}")
+
+            select.select([self.udp_socket], [], [], 0.05)
+
+        print(f"[DTLS] 握手超时（{HANDSHAKE_TIMEOUT}s），共尝试 {attempt} 次")
+        self._dtls_connected = False
+        return False
 
     def start_recv_thread(self):
         """启动接收线程"""
@@ -804,31 +1011,44 @@ class FrUdpClient:
             self.recv_thread.join(timeout=3.0)
 
     def _recv_thread_func(self):
-        """UDP接收线程函数"""
         while not self.stop_event.is_set():
             try:
-                if not self.udp_socket:
-                    time.sleep(1)
+                if self._dtls_enable:
+                    if not self.dtls_socket or not self._dtls_connected:
+                        time.sleep(0.1)
+                        continue
+                    with self._io_lock:
+                        data = self.dtls_socket.recv(65535)
+                else:
+                    if not self.udp_socket:
+                        time.sleep(1)
+                        continue
+                    data, addr = self.udp_socket.recvfrom(65535)
+
+                if not data:
                     continue
 
-                data, addr = self.udp_socket.recvfrom(65535)
-
-                # 将接收到的字节数据转换为字符串
                 try:
                     received_str = data.decode('utf-8')
                 except UnicodeDecodeError:
                     print(f"收到非UTF-8数据，长度: {len(data)} 字节")
                     continue
 
-                # 将接收到的字符串添加到缓冲区
                 with self.buffer_lock:
                     self.recv_buffer += received_str
-
-                    # 从缓冲区中提取并处理完整的帧
                     self._process_buffer()
 
             except socket.timeout:
                 continue
+            except OSError as e:
+                # 关键：非阻塞 socket 无数据可读，视为正常，不要打印
+                winerr = getattr(e, "winerror", None)
+                if winerr == 10035 or getattr(e, "errno", None) in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    time.sleep(0.01)
+                    continue
+                if not self.stop_event.is_set():
+                    print(f"UDP接收错误: {e}")
+                time.sleep(0.1)
             except Exception as e:
                 if not self.stop_event.is_set():
                     print(f"UDP接收错误: {e}")
@@ -836,51 +1056,34 @@ class FrUdpClient:
 
     def _process_buffer(self):
         """处理接收缓冲区中的帧数据"""
-        # 从缓冲区中分割出完整的帧
         frames = split_frame(self.recv_buffer)
 
         if frames:
-            # 找到最后一个完整帧的结束位置
             last_frame_end = self.recv_buffer.rfind("/b/f")
             if last_frame_end != -1:
-                # 保留未完成的数据
                 self.recv_buffer = self.recv_buffer[last_frame_end + 4:]
             else:
                 self.recv_buffer = ""
 
-            # 处理每个完整的帧
             for frame_str in frames:
                 self._process_frame(frame_str)
 
     def _process_frame(self, frame_str: str):
-        """
-        处理单个帧 - 解析并通过回调返回给上层
-
-        Args:
-            frame_str: 帧字符串
-        """
-        # 解析帧
+        """处理单个帧 - 解析并通过回调返回给上层"""
         frame = unpack_frame(frame_str)
 
-        # 验证解析是否成功
         if frame.head != "/f/b" or frame.tail != "/b/f":
             print("帧解析失败")
             return
-        # print(f"[DEBUG] 原始帧字符串: {frame_str}")
-        # print(f"收到UDP帧 - 计数:{frame.count} 命令ID:{frame.cmd_id} 数据长度:{frame.content_len}")
 
-        # 检查是否是Lua错误
         if frame.cmd_id == 500:
             err_lin_num, lua_err_code = get_robot_lua_program_500_err_code(frame.content)
             if err_lin_num != 0 or lua_err_code != 0:
                 print(f"Lua程序错误 - 行号:{err_lin_num}, 错误码:{lua_err_code}")
 
-        # 调用回调函数，将解析后的帧数据返回给上层
         if self.callback:
             try:
-                # 回调函数格式: int callback(int srcType, int count, int cmdID, int daLen, string content)
                 self.callback(0, frame.count, frame.cmd_id, frame.content_len, frame.content)
-
             except Exception as e:
                 print(f"回调执行错误: {e}")
 
@@ -912,30 +1115,58 @@ class FrUdpClient:
             return False
 
     def send_data(self, data: str) -> bool:
-        """
-        发送UDP数据 - 透传，不封装
-
-        Args:
-            data: 要发送的字符串数据
-
-        Returns:
-            bool: 是否发送成功
-        """
+        print(f"[send_data] dtls_enable={self._dtls_enable}, "
+              f"udp_socket={self.udp_socket is not None}, "
+              f"dtls_socket={self.dtls_socket is not None}, "
+              f"data={data[:60]!r}")
         if not self.udp_socket:
             print("UDP套接字未创建")
             return False
         if not self._verify_frame(data):
             return RobotError.ERR_PARAM_VALUE
+
         try:
             encoded_data = data.encode('utf-8')
-            sent = self.udp_socket.sendto(encoded_data, (self.ip, self.port))
 
-            # (f"发送UDP数据 - 长度:{sent} 字节")
-            return sent == len(encoded_data)
+            if self._dtls_enable and self.dtls_socket is not None:
+                # 1. 确保握手完成
+                if not self._ensure_dtls_handshake():
+                    print("DTLS发送失败: 握手未完成")
+                    return RobotError.ERR_SOCKET_SEND_FAILED
 
+                # 2. 直接 send，不要拿锁、不要 recv 重试
+                try:
+                    sent = self.dtls_socket.send(encoded_data)
+                except (WantReadError, WantWriteError):
+                    print("DTLS发送 WantRead，跳过本次")
+                    return RobotError.ERR_SOCKET_SEND_FAILED
+                except OSError as e:
+                    winerr = getattr(e, "winerror", None)
+                    if winerr == 10035 or getattr(e, "errno", None) in (errno.EWOULDBLOCK, errno.EAGAIN):
+                        return RobotError.ERR_SOCKET_SEND_FAILED
+                    print(f"DTLS发送异常: {e}")
+                    self._dtls_connected = False
+                    return RobotError.ERR_SOCKET_SEND_FAILED
+                except Exception as e:
+                    print(f"DTLS发送异常: {e}")
+                    self._dtls_connected = False
+                    return RobotError.ERR_SOCKET_SEND_FAILED
+            else:
+                # ← 这里之前缺失！非加密模式走这里
+                sent = self.udp_socket.sendto(encoded_data, (self.ip, self.port))
+                return sent == len(encoded_data)
         except Exception as e:
+            import traceback
             print(f"发送UDP数据失败: {e}")
+            traceback.print_exc()
             return RobotError.ERR_SOCKET_SEND_FAILED
+
+    def _dtls_send_with_retry(self, data: bytes, timeout: float = 10.0) -> int:
+        """
+        已弃用。DTLS 的握手交给 _ensure_dtls_handshake，
+        发送不再做 recv 重试。保留此方法仅用于兼容。
+        """
+        return self.dtls_socket.send(data)
 
     def set_callback(self, callback: UdpFrameCallback):
         """设置帧接收回调函数"""
@@ -943,9 +1174,20 @@ class FrUdpClient:
         print("回调函数已设置")
 
     def close(self):
-        """关闭UDP套接字"""
+        """关闭UDP/DTLS套接字"""
         self.stop_recv_thread()
 
+        # 先关闭DTLS
+        if self.dtls_socket:
+            try:
+                self.dtls_socket.close()
+            except Exception:
+                pass
+            finally:
+                self.dtls_socket = None
+        self._dtls_ctx = None
+
+        # 再关闭UDP
         if self.udp_socket:
             try:
                 self.udp_socket.close()
@@ -958,7 +1200,6 @@ class FrUdpClient:
     def __del__(self):
         """析构函数"""
         self.close()
-
 
 # ==================== RobotState 枚举 ====================
 class RobotState(enum.Enum):
@@ -2205,7 +2446,38 @@ class RPC():
     _reconnect_max_retries = 30  # 默认最大重连次数
     _reconnect_period = 1000  # 默认1秒（单位ms）
 
-    def __init__(self, ip="192.168.58.2"):
+    # ==================== 加密通信配置 ====================
+    # mTLS 配置（8080端口，TCP）
+    MTLS_ENABLE = False  # 是否启用mTLS
+    MTLS_CA_CERT = ""  # CA根证书路径
+    MTLS_CLIENT_CERT = ""  # 客户端证书路径
+    MTLS_CLIENT_KEY = ""  # 客户端私钥路径
+    MTLS_SERVER_HOSTNAME = ""  # 服务器主机名验证（为空则不验证）
+
+    # DTLS 配置（20007端口，UDP）
+    DTLS_ENABLE = False  # 是否启用DTLS
+    DTLS_CA_CERT = ""  # CA根证书路径
+    DTLS_CLIENT_CERT = ""  # 客户端证书路径
+    DTLS_CLIENT_KEY = ""  # 客户端私钥路径
+    DTLS_SERVER_HOSTNAME = ""  # 服务器主机名验证（为空则不验证）
+
+    # 内部缓存
+    _mtls_context = None
+    _dtls_context = None
+    _mtls_socket = None
+    _dtls_socket = None
+    _mtls_lock = threading.Lock()
+    _dtls_lock = threading.Lock()
+
+    def __init__(self, ip="192.168.58.2", tls_enable=False, tls_cert_path=""):
+        """
+        @brief  初始化机器人连接
+        @param  [in] ip: 机器人IP地址
+        @param  [in] tls_enable: 是否启用加密通信（mTLS + DTLS），默认False
+        @param  [in] tls_cert_path: 证书文件夹路径，目录下需包含：
+                                    ca.crt / client.crt / client.key
+                                    当 tls_enable=True 时必填
+        """
         self.lock = threading.Lock()
         self.ip_address = ip
         link = 'http://' + self.ip_address + ":20003"
@@ -2216,18 +2488,10 @@ class RPC():
         self.robot_state_pkg = RobotStatePkg()
 
         self.stop_event = threading.Event()
-        # 禁用20004端口（已用20005 CNDE完全取代）
-        # self.connect_to_robot()
-        # thread = threading.Thread(target=self.robot_state_routine_thread)
-        # thread.daemon = True
-        # thread.start()
-        # time.sleep(1)
+
         print(self.robot)
 
-        # 创建UDP客户端（内部实现）
-        self._udp_client = FrUdpClient(ip)
-        self._udp_client.start_recv_thread()
-
+        # ==================== 第一步：先建立 CNDE 连接和 XML-RPC 连接 ====================
         # UDP帧计数器 (0-65535循环)
         self._udp_count = 0
         self._udp_count_lock = threading.Lock()
@@ -2235,7 +2499,6 @@ class RPC():
         # CNDE客户端（20005端口）- 完全取代20004端口功能
         print("使用20005 CNDE端口获取状态数据（已取代20004端口）")
         self._com_err_flag = [0]
-        # 传入IP地址以支持多机器人隔离配置，传入self以支持断线重连
         self._cnde_client = FRCNDEClient(self.robot_state_pkg, self._com_err_flag, self.ip_address, self)
         cnde_ok = False
         xmlrpc_ok = False
@@ -2266,15 +2529,141 @@ class RPC():
             socket.setdefaulttimeout(None)
             self.robot = xmlrpc.client.ServerProxy(link)
 
-        # 只有CNDE和XML-RPC都成功才设置is_connect = True
+        # ==================== 第二步：TLS 加密使能状态一致性校验 ====================
         if cnde_ok and xmlrpc_ok:
-            RPC.is_connect = True
-            print("[调试] RPC连接完全成功，is_connect = True")
+            # 获取机器人端 TLS 加密使能状态
+            ret, robot_tls_enable = self.GetTLSEnableState()
+
+            # SDK 端配置的加密状态（基于构造参数 tls_enable 判断）
+            sdk_tls_enable = bool(tls_enable)
+
+            if ret != 0 or robot_tls_enable is None:
+                # 获取机器人 TLS 状态失败
+                print(f"[安全通信] 获取机器人 TLS 使能状态失败: {ret}")
+                RPC.is_connect = False
+
+                # 关闭已建立的 CNDE 连接
+                if self._cnde_client is not None:
+                    self._cnde_client.close()
+                    self._cnde_client = None
+
+                raise RuntimeError(
+                    f"机器人SDK与服务端的指令协议加密开启状态校验失败，"
+                    f"错误码: {RobotError.ERR_CMD_TLS_ENABLE_STATE}"
+                )
+
+            # 判断 SDK 与机器人端加密状态是否一致
+            if sdk_tls_enable != robot_tls_enable:
+                print(f"[安全通信] 加密状态不一致！"
+                      f"SDK端: {'开启' if sdk_tls_enable else '关闭'}, "
+                      f"机器人端: {'开启' if robot_tls_enable else '关闭'}")
+
+                # 关闭已建立的 CNDE 连接
+                if self._cnde_client is not None:
+                    self._cnde_client.close()
+                    self._cnde_client = None
+
+                RPC.is_connect = False
+                raise RuntimeError(
+                    f"机器人SDK与服务端的指令协议加密开启状态不一致，"
+                    f"错误码: {RobotError.ERR_CMD_TLS_ENABLE_STATE}"
+                )
+            else:
+                print(f"[安全通信] 加密状态一致: "
+                      f"{'加密通信' if sdk_tls_enable else '明文通信'}")
         else:
             RPC.is_connect = False
             print(f"[调试] RPC连接失败 (CNDE:{cnde_ok}, XML-RPC:{xmlrpc_ok})，is_connect = False")
+            self.robot = xmlrpc.client.ServerProxy(link)
+            return
+
+        # ==================== 第三步：初始化加密配置（仅在校验通过后） ====================
+        self._init_tls_config(tls_enable, tls_cert_path)
+
+        # 创建UDP客户端（内部实现，携带加密配置）
+        self._udp_client = FrUdpClient(
+            ip=ip,
+            port=self.ROBOT_UDP_PORT,
+            dtls_enable=RPC.DTLS_ENABLE,
+            dtls_ca_cert=RPC.DTLS_CA_CERT,
+            dtls_client_cert=RPC.DTLS_CLIENT_CERT,
+            dtls_client_key=RPC.DTLS_CLIENT_KEY,
+            dtls_server_hostname=RPC.DTLS_SERVER_HOSTNAME,
+        )
+        self._udp_client.start_recv_thread()
+
+        # ==================== 第四步：标记连接成功 ====================
+        RPC.is_connect = True
+        print("[调试] RPC连接完全成功，is_connect = True")
 
         self.robot = xmlrpc.client.ServerProxy(link)
+
+    def _init_tls_config(self, tls_enable, tls_cert_path):
+        """
+        内部：根据构造参数初始化加密配置
+        @param tls_enable: 是否启用加密
+        @param tls_cert_path: 证书文件夹路径
+        """
+        if not tls_enable:
+            RPC.MTLS_ENABLE = False
+            RPC.DTLS_ENABLE = False
+            RPC._mtls_context = None
+            RPC._dtls_context = None
+            print("[安全通信] 加密未启用，使用明文通信")
+            return
+
+        path = str(tls_cert_path).strip()
+        if not path:
+            print("[安全通信] 警告：tls_enable=True 但 tls_cert_path 为空，降级为明文通信")
+            RPC.MTLS_ENABLE = False
+            RPC.DTLS_ENABLE = False
+            return
+
+        if not os.path.isdir(path):
+            print(f"[安全通信] 警告：证书路径不是有效文件夹: {path}，降级为明文通信")
+            RPC.MTLS_ENABLE = False
+            RPC.DTLS_ENABLE = False
+            return
+
+        ca_cert = os.path.join(path, "ca.crt")
+        client_cert = os.path.join(path, "client.crt")
+        client_key = os.path.join(path, "client.key")
+
+        missing = []
+        if not os.path.exists(ca_cert):
+            missing.append("ca.crt")
+        if not os.path.exists(client_cert):
+            missing.append("client.crt")
+        if not os.path.exists(client_key):
+            missing.append("client.key")
+
+        if missing:
+            print(f"[安全通信] 警告：证书文件缺失: {', '.join(missing)}，降级为明文通信")
+            RPC.MTLS_ENABLE = False
+            RPC.DTLS_ENABLE = False
+            return
+
+        # mTLS
+        RPC.MTLS_ENABLE = True
+        RPC.MTLS_CA_CERT = ca_cert
+        RPC.MTLS_CLIENT_CERT = client_cert
+        RPC.MTLS_CLIENT_KEY = client_key
+        RPC.MTLS_SERVER_HOSTNAME = ""
+        RPC._mtls_context = None
+
+        # DTLS
+        RPC.DTLS_ENABLE = True
+        RPC.DTLS_CA_CERT = ca_cert
+        RPC.DTLS_CLIENT_CERT = client_cert
+        RPC.DTLS_CLIENT_KEY = client_key
+        RPC.DTLS_SERVER_HOSTNAME = ""
+        RPC._dtls_context = None
+
+        print(f"[安全通信] 已启用加密通信（mTLS + DTLS）")
+        print(f"[安全通信]   证书路径:   {path}")
+        print(f"[安全通信]   CA:        {ca_cert}")
+        print(f"[安全通信]   客户端证书: {client_cert}")
+        print(f"[安全通信]   客户端私钥: {client_key}")
 
     def SetUDPCmdRpyCallback(self, callback: UdpFrameCallback):
         """
@@ -2296,6 +2685,28 @@ class RPC():
         if hasattr(self, '_udp_client'):
             return self._udp_client.send_data(data)
         return False
+
+    """
+    @brief 通过TCP8080发送自定义指令帧（mTLS 模式下自动经加密通道）
+    @param [in] frame 完整指令帧，如 "/f/bIII52III236III7IIIMode(0)III/b/f"
+    @return 错误码 成功- 0, 失败-错误码
+    """
+    def SendTCPFrame(self, frame):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        # 参数校验：确保传入的是有效的指令帧
+        if not isinstance(frame, str) or not self._udp_client._verify_frame(frame):
+            self.log_error(f"SendTCPFrame: invalid frame -> {frame}")
+            return RobotError.ERR_PARAM_VALUE
+
+        try:
+            # 复用已有的 send_message 逻辑（内部已支持 mTLS 加密）
+            error = self.send_message(frame)
+            return error
+        except Exception as e:
+            self.log_error(f"SendTCPFrame failed: {e}")
+            return RobotError.ERR_OTHER
 
     def _get_next_udp_count(self):
         """
@@ -2695,32 +3106,61 @@ class RPC():
             self.logger.error(message)
 
     def send_message(self, message):
-        """创建tcp连接发送消息"""
-        # 创建一个TCP/IP套接字
+        """
+        创建TCP连接发送消息（支持mTLS加密）
+        """
+
         sock1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        port = 8080  # 固定端口号为8080
+        port = 8080
+
         try:
-            # 连接到服务器
-            sock1.connect((self.ip_address, 8080))
-            # 发送数据
+            if RPC.MTLS_ENABLE:
+                ctx = self._get_mtls_context()
+
+                if ctx is None:
+                    self.log_error("mTLS上下文创建失败，无法发送消息")
+                    return RobotError.ERR_OTHER
+
+                if RPC.MTLS_SERVER_HOSTNAME:
+                    sock1 = ctx.wrap_socket(sock1, server_hostname=RPC.MTLS_SERVER_HOSTNAME)
+                else:
+                    sock1 = ctx.wrap_socket(sock1)
+
+            sock1.connect((self.ip_address, port))
+
             sock1.sendall(message.encode('utf-8'))
 
             response = sock1.recv(1024).decode('utf-8')
 
             value = response.split('III')
+
             if len(value) == 6:
                 if value[4] == "1":
                     return 0
                 else:
-                    print("error happended", value[4])
+                    self.log_error(f"error happened: {value[4]}")
                     return -1
             else:
                 return -1
-        except Exception as e:
-            print(f'An error occurred: {e}')
 
+        except ssl.SSLError as e:
+            self.log_error(f"mTLS通信错误: {e}")
+            return RobotError.ERR_OTHER
+        except socket.timeout:
+            return RobotError.ERR_OTHER
+        except ConnectionRefusedError:
+            return RobotError.ERR_OTHER
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.log_error(f'An error occurred: {e}')
+            return RobotError.ERR_OTHER
         finally:
-            sock1.close()
+            print(f"[FIN] 准备关闭 socket")
+            try:
+                sock1.close()
+            except Exception:
+                pass
 
     """2024.12.23"""
     """   
@@ -2752,7 +3192,7 @@ class RPC():
             time.sleep(0.1)
 
         error = 0
-        sdk = ["SDK:V2.2.8", "Robot:V3.9.9"]
+        sdk = ["SDK:V2.2.8", "Robot:V4.0.0"]
         return error, sdk
 
     """   
@@ -13665,6 +14105,7 @@ class RPC():
     """   
     @brief 设置焊机控制模式
     @param [in] mode 焊机控制模式;焊机控制模式;0-直流一元模式；1-脉冲一元模式；2-JOB模式；3-近控模式；4-分别模式；5-CC/CV模式；6-TIG；7-CMT
+    ,8-松下-有脉冲模式，9-松下-无脉冲模式
     @param [in] ioType 控制类型；0-控制箱IO；1-数字通信协议(UDP);2-数字通信协议(ModbusTCP)
     @return 错误码 成功- 0, 失败-错误码
     """
@@ -13686,7 +14127,7 @@ class RPC():
 
         return error
 
-    """   
+        """   
     @brief 关闭RPC
     @return 错误码 成功- 0, 失败-错误码
     """
@@ -13700,17 +14141,58 @@ class RPC():
         # 设置停止事件以通知线程停止
         self.stop_event.set()
 
-        # 关闭CNDE连接（关键：必须先关闭CNDE再关闭RPC）
+        # ==================== 1. 关闭 mTLS 加密通道（8080 TCP） ====================
+        if RPC.MTLS_ENABLE and RPC._mtls_context is not None:
+            try:
+                # 优雅关闭 mTLS 上下文（发送 close_notify）
+                RPC._mtls_context = None
+                print("[安全通信] mTLS 加密通道已关闭")
+            except Exception as e:
+                print(f"[安全通信] 关闭 mTLS 失败: {e}")
+            finally:
+                RPC._mtls_context = None
+
+        # ==================== 2. 关闭 DTLS 加密通道（20007 UDP） ====================
+        if RPC.DTLS_ENABLE and RPC._dtls_context is not None:
+            try:
+                # 优雅关闭 DTLS 上下文（发送 close_notify，机器人可感知主动断开）
+                RPC._dtls_context = None
+                print("[安全通信] DTLS 加密通道已关闭")
+            except Exception as e:
+                print(f"[安全通信] 关闭 DTLS 失败: {e}")
+            finally:
+                RPC._dtls_context = None
+
+        # 关闭 UDP 客户端中的 DTLS socket（如果存在）
+        if hasattr(self, '_udp_client') and self._udp_client is not None:
+            try:
+                if self._udp_client.dtls_socket is not None:
+                    # 发送 DTLS close_notify，通知机器人主动断开
+                    try:
+                        self._udp_client.dtls_socket.close()
+                    except Exception:
+                        pass
+                    self._udp_client.dtls_socket = None
+                self._udp_client._dtls_ctx = None
+                self._udp_client._dtls_connected = False
+            except Exception as e:
+                print(f"[安全通信] 关闭 UDP DTLS socket 失败: {e}")
+
+        # ==================== 3. 关闭 CNDE 连接 ====================
         if hasattr(self, '_cnde_client') and self._cnde_client is not None:
             print("关闭CNDE连接...")
             self._cnde_client.close()
             self._cnde_client = None
 
-        # 如果线程仍在运行，则等待其结束
-        # if self.thread.is_alive():
-        #     self.thread.join()
+        # ==================== 4. 关闭 UDP 客户端 ====================
+        if hasattr(self, '_udp_client') and self._udp_client is not None:
+            try:
+                self._udp_client.close()
+            except Exception:
+                pass
+            self._udp_client = None
 
-        # 清理 XML-RPC 代理
+        # ==================== 5. 清理 XML-RPC 代理 ====================
         if self.robot is not None:
             self.robot = None  # 将代理设置为 None，释放资源
             if self.sock_cli_state is not None:
@@ -13718,9 +14200,8 @@ class RPC():
                 self.sock_cli_state = None
             self.robot_state_pkg = None
             self.closeRPC_state = True
-            # self.robot_realstate_exit = False
 
-        # 如果线程仍在运行，则等待其结束
+        # ==================== 6. 等待接收线程结束 ====================
         if self.thread.is_alive():
             self.thread.join()
 
@@ -19710,3 +20191,163 @@ class RPC():
         error = self.SendUDPFrame(udp_data)
 
         return 0
+
+    @log_call
+    @xmlrpc_timeout
+    def _get_mtls_context(self):
+        """内部获取或创建mTLS SSLContext"""
+        if RPC._mtls_context is not None:
+            return RPC._mtls_context
+
+        try:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            # 加载 CA 根证书（验证服务器）
+            if RPC.MTLS_CA_CERT and os.path.exists(RPC.MTLS_CA_CERT):
+                ctx.load_verify_locations(RPC.MTLS_CA_CERT)
+                ctx.verify_mode = ssl.CERT_REQUIRED
+            else:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+            # 加载客户端证书和私钥（供服务器验证）
+            if RPC.MTLS_CLIENT_CERT and RPC.MTLS_CLIENT_KEY:
+                if os.path.exists(RPC.MTLS_CLIENT_CERT) and os.path.exists(RPC.MTLS_CLIENT_KEY):
+                    ctx.load_cert_chain(RPC.MTLS_CLIENT_CERT, RPC.MTLS_CLIENT_KEY)
+                else:
+                    self.log_error("mTLS客户端证书或私钥文件不存在")
+                    return None
+            else:
+                self.log_error("mTLS启用但未配置客户端证书")
+                return None
+
+            RPC._mtls_context = ctx
+            return ctx
+        except Exception as e:
+            self.log_error(f"创建mTLS上下文失败: {e}")
+            return None
+
+    """
+    @brief 即时设置物理速度
+    @param [in] speed 物理速度值, mm/s
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetPhySpeedInstant(self, speed):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        if self.GetSafetyCode() != 0:
+            return self.GetSafetyCode()
+
+        speed = float(speed)
+
+        try:
+            # 获取下一个计数
+            count = self._get_next_udp_count()
+
+            # 构建命令字符串
+            cmd_str = f"SetPhySpeed({speed})"
+            content_len = len(cmd_str)
+
+            # 构建UDP帧数据
+            cmd_id = 983
+            udp_data = f"/f/bIII{count}III{cmd_id}III{content_len}III{cmd_str}III/b/f"
+
+            # 通过UDP发送
+            success = self.SendUDPFrame(udp_data)
+
+            if success:
+                return 0
+            else:
+                return RobotError.ERR_SOCKET_SEND_FAILED
+        except Exception as e:
+            self.log_error(f"SetPhySpeedInstant UDP send failed: {e}")
+            return RobotError.ERR_SOCKET_SEND_FAILED
+
+    """
+    @brief 获取8组逆解
+    @param [in] tcp_pose 笛卡尔位姿，6个元素[x,y,z,rx,ry,rz]
+    @param [in] tool 工具坐标系
+    @param [in] workpiece 工件坐标系
+    @param [in] exPos 扩展轴位置，4个元素
+    @return 错误码
+    @return jPos 输出8组关节角度，二维列表，每组6个关节值，共48个值
+    """
+    @log_call
+    @xmlrpc_timeout
+    def TCFToAllJoint(self, tcp_pose, tool, workpiece, exPos):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        if self.GetSafetyCode() != 0:
+            return self.GetSafetyCode()
+
+        tcp_pose = list(map(float, tcp_pose))
+        tool = int(tool)
+        workpiece = int(workpiece)
+        exPos = list(map(float, exPos))
+
+        flag = True
+        while flag:
+            try:
+                _result = self.robot.TCFToAllJoint(tcp_pose, tool, workpiece, exPos)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = int(_result[0])
+        if error == 0:
+            # 解析返回的字符串（逗号分隔的48个值）
+            paramStr = str(_result[1])
+            parS = paramStr.split(',')
+            if len(parS) != 48:
+                self.log_error(f"TCFToAllJoint size fail, expected 48 but got {len(parS)}")
+                return -1, None
+
+            # 解析8组关节角度，每组6个值
+            jPos = []
+            for i in range(8):
+                joint = [
+                    float(parS[i * 6 + 0]),
+                    float(parS[i * 6 + 1]),
+                    float(parS[i * 6 + 2]),
+                    float(parS[i * 6 + 3]),
+                    float(parS[i * 6 + 4]),
+                    float(parS[i * 6 + 5])
+                ]
+                jPos.append(joint)
+
+            return error, jPos
+        else:
+            self.log_error(f"execute TCFToAllJoint fail: {error}")
+            return error, None
+    """
+    @brief 获取机器人指令协议服务端TLS加密使能状态
+    @param [out] enable 0-未使能；1-使能
+    @return 错误码 成功- 0, 失败-错误码
+    """
+
+    def GetTLSEnableState(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetTLSEnableState()
+                flag = False
+            except socket.error as e:
+                flag = True
+            except Exception as e:
+                return 0, False
+
+        error = _error[0]
+        if error == 0:
+            enable = True if int(_error[1]) == 1 else False
+            return error, enable
+        else:
+            self.log_error(f"execute GetTLSEnableState fail {error}")
+            return error, None
