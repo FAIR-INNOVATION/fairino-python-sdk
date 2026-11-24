@@ -3192,7 +3192,7 @@ class RPC():
             time.sleep(0.1)
 
         error = 0
-        sdk = ["SDK:V2.2.8", "Robot:V4.0.1"]
+        sdk = ["SDK:V2.3.2", "Robot:V4.0.2"]
         return error, sdk
 
     """   
@@ -9338,8 +9338,10 @@ class RPC():
     @param  [in] 必选参数 int weaveRightStayTime 摆动右停留时间(ms)
     @param  [in] 必选参数 int weaveCircleRadio 圆形摆动-回调比率(0-100%)
     @param  [in] 必选参数 int weaveStationary 摆动位置等待，0-等待时间内位置继续移动；1-等待时间内位置静止
-    @param  [in] 必选参数 float weaveYawAngle 摆动方向方位角（绕摆动Z轴旋转），单位°,默认0
-    @param  [in] 必选参数 float weaveRotAngle 摆动方向方位角（绕摆动X轴旋转），单位°,默认0
+    @param  [in] 默认参数 float weaveYawAngle 摆动方向方位角（绕摆动Z轴旋转），单位°，默认0
+    @param  [in] 默认参数 float weaveRotAngle 摆动方向侧倾角（绕摆动X轴偏转），单位°[-180-180]，默认0
+    @param  [in] 默认参数 float weavePendulumLength 摇枪摆动的摆长，单位mm，默认0
+    @param  [in] 默认参数 float weavePendulumAngle 摇枪摆动的摆角，单位°，默认0
     @return 错误码 成功- 0, 失败-错误码
     """
 
@@ -9347,7 +9349,8 @@ class RPC():
     @xmlrpc_timeout
     def WeaveSetPara(self, weaveNum, weaveType, weaveFrequency, weaveIncStayTime, weaveRange,
                      weaveLeftRange, weaveRightRange, additionalStayTime, weaveLeftStayTime,
-                     weaveRightStayTime, weaveCircleRadio, weaveStationary, weaveYawAngle=0, weaveRotAngle=0):
+                     weaveRightStayTime, weaveCircleRadio, weaveStationary, weaveYawAngle=0, weaveRotAngle=0,
+                     weavePendulumLength=0, weavePendulumAngle=0):
         while self.reconnect_flag:
             time.sleep(0.1)
         weaveNum = int(weaveNum)
@@ -9364,13 +9367,16 @@ class RPC():
         weaveStationary = int(weaveStationary)
         weaveYawAngle = float(weaveYawAngle)
         weaveRotAngle = float(weaveRotAngle)
+        weavePendulumLength = float(weavePendulumLength)
+        weavePendulumAngle = float(weavePendulumAngle)
         flag = True
         while flag:
             try:
                 error = self.robot.WeaveSetPara(weaveNum, weaveType, weaveFrequency, weaveIncStayTime, weaveRange,
                                                 weaveLeftRange, weaveRightRange, additionalStayTime,
                                                 weaveLeftStayTime, weaveRightStayTime, weaveCircleRadio,
-                                                weaveStationary, weaveYawAngle, weaveRotAngle)
+                                                weaveStationary, weaveYawAngle, weaveRotAngle,
+                                                weavePendulumLength, weavePendulumAngle)
                 flag = False
             except socket.error as e:
                 flag = True
@@ -13581,97 +13587,6 @@ class RPC():
             return error[0], error[1]
         else:
             return error
-
-    """   
-    @brief  设置末端LUA末端设备启用类型
-    @param  [in] forceSensorEnable 力传感器启用状态，0-不启用；1-启用
-    @param  [in] gripperEnable 夹爪启用状态，0-不启用；1-启用
-    @param  [in] IOEnable IO设备启用状态，0-不启用；1-启用
-    @param  [in] dexhandEnable 灵巧手启用状态，0-不启用；1-启用
-    @return 错误码 成功- 0, 失败-错误码        
-    """
-
-    @log_call
-    @xmlrpc_timeout
-    def SetAxleLuaEnableDeviceType(self, forceSensorEnable, gripperEnable, IOEnable, dexhandEnable):
-        while self.reconnect_flag:
-            time.sleep(0.1)
-        forceSensorEnable = int(forceSensorEnable)
-        gripperEnable = int(gripperEnable)
-        IOEnable = int(IOEnable)
-        flag = True
-        while flag:
-            try:
-                error = self.robot.SetAxleLuaEnableDeviceType(forceSensorEnable, gripperEnable, IOEnable, dexhandEnable)
-                flag = False
-            except socket.error as e:
-                flag = True
-
-        return error
-
-    """   
-    @brief  获取末端LUA末端设备启用类型
-    @return 错误码 成功- 0, 失败-错误码   
-    @return 返回值（调用成功返回） forceSensorEnable 力传感器启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） gripperEnable 夹爪启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） IOEnable IO设备启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） dexhandEnable 灵巧手启用状态，0-不启用；1-启用
-    """
-
-    @log_call
-    @xmlrpc_timeout
-    def GetAxleLuaEnableDeviceType(self):
-        while self.reconnect_flag:
-            time.sleep(0.1)
-        flag = True
-        while flag:
-            try:
-                error = self.robot.GetAxleLuaEnableDeviceType()
-                flag = False
-            except socket.error as e:
-                flag = True
-
-        if error[0] == 0:
-            return error[0], error[1], error[2], error[3], error[4]
-        else:
-            return error
-
-    """   
-    @brief  获取当前配置的末端设备
-    @return 错误码 成功- 0, 失败-错误码   
-    @return 返回值（调用成功返回） forceSensorEnable[8] 力传感器启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） gripperEnable[8] 夹爪启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） IOEnable[8]  IO设备启用状态，0-不启用；1-启用
-    @return 返回值（调用成功返回） decHandEnable 灵巧手启用设备编号，0-不启用；1-启用
-    """
-
-    @log_call
-    @xmlrpc_timeout
-    def GetAxleLuaEnableDevice(self):
-        while self.reconnect_flag:
-            time.sleep(0.1)
-        flag = True
-        while flag:
-            try:
-                error = self.robot.GetAxleLuaEnableDevice()
-                flag = False
-            except socket.error as e:
-                flag = True
-
-        if error[0] == 0:
-            par = error[1].split(',')
-            if 40 != len(par):
-                self.log_error("GetAxleLuaEnableDevice fail")
-                return -1, None, None, None
-            else:
-                print(par)
-                return (error[0], [par[0], par[1], par[2], par[3], par[4], par[5], par[6], par[7]],
-                        [par[8], par[9], par[10], par[11], par[12], par[13], par[14], par[15]],
-                        [par[16], par[17], par[18], par[19], par[20], par[21], par[22], par[23]],
-                        [par[24], par[25], par[26], par[27], par[28], par[29], par[30], par[31],
-                        par[32], par[33], par[34], par[35], par[36], par[37], par[38], par[39]])
-        else:
-            return error, None, None, None
 
     """   
     @brief  设置启用夹爪动作控制功能
@@ -20349,30 +20264,34 @@ class RPC():
     """
     @brief 数据备份包上传升级
     @param [in] filePath 上传数据备份包文件路径；D://zUP/fr_user_data.tar.gz
+    @param [in] isSafetyParamUpgrade 是否升级安全配置参数
+    @param [in] pwd 安全密码
     @return 错误码
     """
 
     @log_call
     @xmlrpc_timeout
-    def DataPackageUpgrade(self, filePath):
+    def DataPackageUpgrade(self, filePath, isSafetyParamUpgrade=0, pwd=""):
         while self.reconnect_flag:
             time.sleep(0.1)
 
         filePath = str(filePath)
+        isSafetyParamUpgrade = int(isSafetyParamUpgrade)
+        pwd = str(pwd)
+
         errcode = self.__FileUpLoad(7, filePath)
         if errcode == 0:
             flag = True
             while flag:
                 try:
-                    _error = self.robot.DataPackageUpgrade()
+                    _error = self.robot.DataPackageUpgrade(isSafetyParamUpgrade, pwd)
                     flag = False
                 except socket.error as e:
                     flag = True
 
-            error = _error[0]
-            if error != 0:
-                print(f"DataPackageUpgrade failed error code is: {error}")
-            return error
+            if _error != 0:
+                print(f"DataPackageUpgrade failed error code is: {_error}")
+            return _error
         else:
             print(f"DataPackageUpgrade upload file fail. errcode is: {errcode}")
         return errcode
@@ -20434,3 +20353,758 @@ class RPC():
         else:
             print(f"execute GetJointAllParamUpgradeProgress fail {error}")
             return error, None
+
+    """
+    @brief 获取机器人DH补偿模型
+    @param [out] mode 0-DH1.0；1-DH2.0
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDHCompenMode(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        mode = 0
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDHCompenMode()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            mode = int(_error[1])
+            return error, mode
+        else:
+            print(f"execute GetDHCompenMode fail {error}")
+            return error, None
+
+    """
+    @brief 获取机器人DH2.0参数
+    @param [out] d 连杆偏距(mm)
+    @param [out] a 连杆长度(mm)
+    @param [out] alpha 连杆扭角(°)
+    @param [out] beta 连杆偏角(°)
+    @param [out] theta 关节零位(°)
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetDHAllParam(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        d = [0.0] * 6
+        a = [0.0] * 6
+        alpha = [0.0] * 6
+        beta = [0.0] * 6
+        theta = [0.0] * 6
+
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetDHAllParam()
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        error = _error[0]
+        if error == 0:
+            param_str = str(_error[1])
+            parS = param_str.split(',')
+            if len(parS) != 30:
+                print("get all param size fail")
+                return -1, None, None, None, None, None
+            for i in range(6):
+                d[i] = float(parS[i])
+                a[i] = float(parS[i + 6])
+                alpha[i] = float(parS[i + 12])
+                beta[i] = float(parS[i + 18])
+                theta[i] = float(parS[i + 24])
+            return error, d, a, alpha, beta, theta
+        else:
+            print(f"execute GetDHAllParam fail {error}")
+            return error, None, None, None, None, None
+
+    """
+    @brief 设置运动实时偏移
+    @param [in] mode 摆动坐标系；0-工件坐标系；1-基坐标系；2-工具坐标系；3-摆动坐标系
+    @param [in] offset 实时偏移量[mm，°]
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetCartOffsetRT(self, mode, offset):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+
+        if self.GetSafetyCode() != 0:
+            return self.GetSafetyCode()
+
+        mode = int(mode)
+        offset = list(map(float, offset))
+
+        cmd_str = "SetCartOffsetRT({},{:f},{:f},{:f},{:f},{:f},{:f})".format(
+            mode, offset[0], offset[1], offset[2], offset[3], offset[4], offset[5]
+        )
+
+        count = self._get_next_udp_count()
+        cmd_id = 1368
+        udp_data = "/f/bIII{}III{}III{}III{}III/b/f".format(
+            count, cmd_id, len(cmd_str), cmd_str
+        )
+
+        success = self.SendUDPFrame(udp_data)
+        if success:
+            return 0
+        else:
+            return RobotError.ERR_SOCKET_SEND_FAILED
+
+    """
+    @brief 设置焊接类型
+    @param [in] type 0-电弧焊；1-激光焊
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldType(self, type):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        type = int(type)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldType(type)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置焊机厂商
+    @param [in] value 101-麦格米特；102-OTC；103-松下；104-米勒；1001-everlast激光焊
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldCompany(self, value):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        value = int(value)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldCompany(value)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置送丝速度
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [in] status 送丝速度值
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldWFS(self, io_type, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        status = float(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldWFS(io_type, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置焊接弧长
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [in] status 弧长
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldArcLen(self, io_type, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        status = int(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldArcLen(io_type, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置电弧控制值
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [in] status 电弧控制值
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldArcCtrl(self, io_type, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        status = int(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldArcCtrl(io_type, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置程序槽号
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [in] status 程序槽号值
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldSlot(self, io_type, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        status = int(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldSlot(io_type, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置"禁止焊接"DO
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [in] status 0-关闭"禁止焊接"；1-开启"禁止焊接"
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldDisable(self, io_type, status):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        status = int(status)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldDisable(io_type, status)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置送丝速度UDP自定义控制字序号
+    @param [in] udpNum UDP自定义控制字序号，默认44
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetweldWFSUdpNum(self, udpNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        udpNum = int(udpNum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetweldWFSUdpNum(udpNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置弧长UDP自定义控制字序号
+    @param [in] udpNum UDP自定义控制字序号，默认45
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldArcLenUdpNum(self, udpNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        udpNum = int(udpNum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldArcLenUdpNum(udpNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置电弧控制UDP自定义控制字序号
+    @param [in] udpNum UDP自定义控制字序号，默认46
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldArcCtrlUdpNum(self, udpNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        udpNum = int(udpNum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldArcCtrlUdpNum(udpNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置程序槽号UDP自定义控制字序号
+    @param [in] udpNum UDP自定义控制字序号，默认47
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldSlotUdpNum(self, udpNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        udpNum = int(udpNum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldSlotUdpNum(udpNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置"禁止焊接"UDP扩展DO序号
+    @param [in] DONum UDP扩展DO序号，默认18
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldDisableExtDoNum(self, DONum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        DONum = int(DONum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldDisableExtDoNum(DONum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置"协同状态"UDP扩展DI序号
+    @param [in] DINum UDP扩展DI序号，默认-1不启用
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldSynStateExtDINum(self, DINum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        DINum = int(DINum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldSynStateExtDINum(DINum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取"协同状态"
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [out] synState 0-非协同；1-协同
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetWeldSynState(self, io_type):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetWeldSynState(io_type)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            syn_state = int(_error[1])
+            return error, syn_state
+        else:
+            print(f"Execute GetWeldSynState fail: {error}")
+            return error, None
+
+    """
+    @brief 设置"送丝速度"UDP自定义状态字序号
+    @param [in] udpNum UDP自定义状态字序号，默认47
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def SetWeldWfsFeedbackUdpNum(self, udpNum):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        udpNum = int(udpNum)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetWeldWfsFeedbackUdpNum(udpNum)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取"送丝速度"当前值
+    @param [in] io_type 0-IO；1-UDP；2-modbusTCP
+    @param [out] weldWfsFdbk 当前送丝速度
+    @return 错误码
+    """
+
+    @log_call
+    @xmlrpc_timeout
+    def GetWeldWfsFeedback(self, io_type):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        io_type = int(io_type)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetWeldWfsFeedback(io_type)
+                flag = False
+            except socket.error as e:
+                flag = True
+
+        weld_wfs_fdbk = 0.0
+        error = 0
+        if isinstance(_error, (list, tuple)):
+            if len(_error) >= 2:
+                error = int(_error[0])
+                if error == 0:
+                    weld_wfs_fdbk = float(_error[1])
+            elif len(_error) == 1:
+                weld_wfs_fdbk = float(_error[0])
+        return error, weld_wfs_fdbk
+
+    """
+    @brief 设置启用末端吸盘动作控制功能码
+    @param [in] id 站号
+    @param [in] func 功能码数组，长度16，下标0~15对应Bit0~Bit15：
+    0-吸盘初始化；1-设置通道一最大真空度；2-设置通道一最小真空度；
+    3-设置通道二最大真空度；4-设置通道二最小真空度；5-读通道一状态；6-读通道二状态；
+    7-读初始化状态；8-读故障码；9-读通道一实际真空度；10-读通道二实际真空度；
+    11-通道一控制使能；12-通道二控制使能；
+    每项 0-不启用；1-启用
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SetAxleSuckerFunc(self, id, func):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        id = int(id)
+        if func is None or len(func) == 0 or len(func) > 16:
+            print("SetAxleSuckerFunc invalid func array, length must be 1~16")
+            return RobotError.ERR_PARAM_VALUE
+        func = list(map(int, func))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetAxleSuckerFunc(id, func)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取末端吸盘动作控制功能码
+    @param [in] id 站号
+    @param [out] func 功能码数组，长度16，下标0~15对应Bit0~Bit15，含义同 SetAxleSuckerFunc
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetAxleSuckerFunc(self, id):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        id = int(id)
+        func = [0] * 16
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetAxleSuckerFunc(id)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            result_str = str(_error[1])
+            items = result_str.split(',')
+            if len(items) != 16:
+                print(f"GetAxleSuckerFunc size fail: {len(items)}")
+                return -1, None
+            for i in range(16):
+                func[i] = int(items[i])
+            return error, func
+        return error, None
+
+    """
+    @brief 设置末端吸盘控制参数
+    @param [in] id 站号
+    @param [in] channel 通道使能，长度4：channel[0]=1-使能，0-不使能（下标0-3对应通道1-通道4）
+    @param [in] minPress 最小真空度，长度4
+    @param [in] maxPress 最大真空度（吸盘错误码），长度4
+    @param [in] time 超时时间(ms)
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SetAxleSuckerCtrl(self, id, channel, minPress, maxPress, time):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        id = int(id)
+        time = int(time)
+        if channel is None or minPress is None or maxPress is None or \
+                len(channel) < 4 or len(minPress) < 4 or len(maxPress) < 4:
+            print("SetAxleSuckerCtrl invalid array, each array length must be at least 4")
+            return RobotError.ERR_PARAM_VALUE
+        channel = list(map(int, channel))
+        minPress = list(map(int, minPress))
+        maxPress = list(map(int, maxPress))
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetAxleSuckerCtrl(id, channel, minPress, maxPress, time)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 激活/复位吸盘
+    @param [in] id 站号
+    @param [in] act 1-激活；0-复位
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SetAxleSuckerAct(self, id, act):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        id = int(id)
+        act = int(act)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.SetAxleSuckerAct(id, act)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取末端吸盘状态
+    @param [in] channel 吸盘通道；0-3（对应通道1-通道4）
+    @param [out] enable 激活状态
+    @param [out] done 吸附完成状态
+    @param [out] vacuumValue 真空度
+    @param [out] error 吸盘错误码
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetAxleSuckerState(self, channel):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        channel = int(channel)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetAxleSuckerState(channel)
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            enable = int(_error[1])
+            done = int(_error[2])
+            vacuumValue = int(_error[3])
+            sucker_error = int(_error[4])
+            return error, enable, done, vacuumValue, sucker_error
+        return error, None, None, None, None
+
+    """
+    @brief 等待末端吸盘吸附完成信号
+    @param [in] channel 吸盘通道；0-3（对应通道1-通道4）
+    @param [in] timeout 超时时间(ms)，-1 表示永远等待
+    @param [in] state 状态：0-未吸附物体；1-吸附物体；2-物体脱落
+    @param [in] strategy 超时策略：0-报错停止；1-继续运行
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def WaitAxleSuckerState(self, channel, timeout, state, strategy):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        channel = int(channel)
+        timeout = int(timeout)
+        state = int(state)
+        strategy = int(strategy)
+        flag = True
+        while flag:
+            try:
+                error = self.robot.WaitAxleSuckerState(channel, timeout, state, strategy)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 设置末端LUA末端设备启用类型
+    @param [in] forceSensorEnable 力传感器启用状态，0-不启用；1-启用
+    @param [in] gripperEnable 夹爪启用状态，0-不启用；1-启用
+    @param [in] IOEnable IO设备启用状态，0-不启用；1-启用
+    @param [in] dexhandEnable 灵巧手设备启用状态，0-不启用；1-启用
+    @param [in] suckerEnable 末端吸盘设备启用状态，0-不启用；1-启用；默认-1：不传或传-1时按原四参数下发，兼容未升级控制器
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def SetAxleLuaEnableDeviceType(self, forceSensorEnable, gripperEnable, IOEnable, dexhandEnable, suckerEnable=-1):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        forceSensorEnable = int(forceSensorEnable)
+        gripperEnable = int(gripperEnable)
+        IOEnable = int(IOEnable)
+        dexhandEnable = int(dexhandEnable)
+        suckerEnable = int(suckerEnable)
+        flag = True
+        while flag:
+            try:
+                if suckerEnable < 0:
+                    error = self.robot.SetAxleLuaEnableDeviceType(forceSensorEnable, gripperEnable, IOEnable, dexhandEnable)
+                else:
+                    error = self.robot.SetAxleLuaEnableDeviceType(forceSensorEnable, gripperEnable, IOEnable, dexhandEnable, suckerEnable)
+                flag = False
+            except socket.error as e:
+                flag = True
+        return error
+
+    """
+    @brief 获取末端LUA末端设备启用类型（含末端吸盘）
+    @param [out] forceSensorEnable 力传感器启用状态，0-不启用；1-启用
+    @param [out] gripperEnable 夹爪启用状态，0-不启用；1-启用
+    @param [out] IOEnable IO设备启用状态，0-不启用；1-启用
+    @param [out] dexhandEnable 灵巧手设备启用状态，0-不启用；1-启用
+    @param [out] suckerEnable 末端吸盘设备启用状态，0-不启用；1-启用
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetAxleLuaEnableDeviceType(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        suckerEnable = 0
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetAxleLuaEnableDeviceType()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            forceSensorEnable = int(_error[1])
+            gripperEnable = int(_error[2])
+            IOEnable = int(_error[3])
+            dexhandEnable = int(_error[4])
+            if len(_error) > 5:
+                suckerEnable = int(_error[5])
+            return error, forceSensorEnable, gripperEnable, IOEnable, dexhandEnable, suckerEnable
+        return error, None, None, None, None, None
+
+    """
+    @brief 获取当前配置的末端设备（含末端吸盘）
+    @param [out] forceSensorEnable 力传感器启用设备编号 0-未启用；1-启用
+    @param [out] gripperEnable 夹爪启用设备编号，0-不启用；1-启用
+    @param [out] IODeviceEnable IO设备启用设备编号，0-不启用；1-启用
+    @param [out] decHandEnable 灵巧手启用设备编号，0-不启用；1-启用
+    @param [out] suckerEnable 末端吸盘启用设备编号，0-不启用；1-启用（逗号串第40~47项）
+    @return 错误码
+    """
+    @log_call
+    @xmlrpc_timeout
+    def GetAxleLuaEnableDevice(self):
+        while self.reconnect_flag:
+            time.sleep(0.1)
+        flag = True
+        while flag:
+            try:
+                _error = self.robot.GetAxleLuaEnableDevice()
+                flag = False
+            except socket.error as e:
+                flag = True
+        error = _error[0]
+        if error == 0:
+            result_str = str(_error[1])
+            parS = result_str.split(',')
+            if len(parS) != 48:
+                print(f"GetAxleLuaEnableDevice fail, {len(parS)}")
+                return -1, None, None, None, None, None
+            forceSensorEnable = [0] * 8
+            gripperEnable = [0] * 8
+            IODeviceEnable = [0] * 8
+            decHandEnable = [0] * 8
+            suckerEnable = [0] * 8
+            for i in range(8):
+                forceSensorEnable[i] = int(parS[i])
+                gripperEnable[i] = int(parS[i + 8])
+                IODeviceEnable[i] = int(parS[i + 16])
+                decHandEnable[i] = int(parS[i + 24])
+                suckerEnable[i] = int(parS[i + 40])
+            return error, forceSensorEnable, gripperEnable, IODeviceEnable, decHandEnable, suckerEnable
+        return error, None, None, None, None, None

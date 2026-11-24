@@ -17,7 +17,7 @@ def test_servo_j_with_filtertime(robot):
     offset_pos = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
     # Move to initial joint position
-    robot.MoveJ(joint_pos=j, tool=1, user=0, vel=100, acc=100, ovl=100,
+    robot.MoveJ(joint_pos=j, tool=0, user=0, vel=100, acc=100, ovl=100,
                 exaxis_pos=epos, blendT=-1, offset_flag=0, offset_pos=offset_pos)
 
     vel = 0.0
@@ -56,10 +56,10 @@ def test_servo_j_with_filtertime(robot):
                         rtn = robot.ServoJ(joint_pos=p, axisPos=epos, acc=acc, vel=vel,
                                            cmdT=cmdT, filterT=filterT, gain=gain,
                                            id=cmdID, cmdType=comType)
-                        print(f"ServoJ rtn is {rtn}")
+                        print(f"ServoJ rtn is {rtn} , line  {line}")
     except FileNotFoundError:
         print(f"File not found: {file_path}")
-
+    print("111111111111")
     # End servo motion
     rtn = robot.ServoMoveEnd(comType)
     print(f"ServoMoveEnd rtn is {rtn}")
@@ -122,15 +122,15 @@ def test_servo_cart_with_filtertime(robot):
 
 def main():
     # Establish connection with the robot controller
-    robot = Robot.RPC('192.168.58.2')
+    robot = Robot.RPC('192.168.58.5')
     time.sleep(0.5)  # Wait for connection and data reception
 
     # Set UDP command reply callback
     robot.SetUDPCmdRpyCallback(udp_frame_callback)
 
     # Run the desired test (uncomment one at a time)
-    # test_servo_j_with_filtertime(robot)
-    test_servo_cart_with_filtertime(robot)
+    test_servo_j_with_filtertime(robot)
+    # test_servo_cart_with_filtertime(robot)
 
     # Close connection
     robot.CloseRPC()
